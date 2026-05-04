@@ -1,4 +1,23 @@
 import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
+import {
+  Crosshair,
+  Settings,
+  Sparkles,
+  LayoutGrid,
+  RotateCw,
+  TrendingUp,
+  Target,
+  Swords,
+  Zap,
+  TrendingDown,
+  Backpack,
+  Plus,
+  Smartphone,
+  Map,
+  Lightbulb,
+  Info,
+  type LucideIcon,
+} from 'lucide-react';
 import { I18nContext, DICTIONARIES, type Lang, useI18n } from './i18n';
 import { useLocalStorage } from './hooks/useLocalStorage';
 
@@ -38,25 +57,27 @@ type ModuleId =
 interface NavItem {
   id: ModuleId;
   labelKey: string;
-  icon: string;
+  Icon: LucideIcon;
+  // RGB triplets for module accent gradient (used as CSS vars)
+  accent: [string, string];
 }
 
 const NAV: NavItem[] = [
-  { id: 'sensitivity', labelKey: 'nav.sensitivity', icon: '◎' },
-  { id: 'controls', labelKey: 'nav.controls', icon: '⚙' },
-  { id: 'pro', labelKey: 'nav.pro', icon: '★' },
-  { id: 'hud', labelKey: 'nav.hud', icon: '⊞' },
-  { id: 'gyro', labelKey: 'nav.gyro', icon: '⟲' },
-  { id: 'recoil', labelKey: 'nav.recoil', icon: '↑' },
-  { id: 'drill', labelKey: 'nav.drill', icon: '◉' },
-  { id: 'ttk', labelKey: 'nav.ttk', icon: '✕' },
-  { id: 'reaction', labelKey: 'nav.reaction', icon: '⚡' },
-  { id: 'falloff', labelKey: 'nav.falloff', icon: '↘' },
-  { id: 'loadout', labelKey: 'nav.loadout', icon: '🎒' },
-  { id: 'crosshair', labelKey: 'nav.crosshair', icon: '+' },
-  { id: 'device', labelKey: 'nav.device', icon: '📱' },
-  { id: 'maps', labelKey: 'nav.maps', icon: '🗺' },
-  { id: 'tips', labelKey: 'nav.tips', icon: '💡' },
+  { id: 'sensitivity', labelKey: 'nav.sensitivity', Icon: Crosshair, accent: ['251 146 60', '249 115 22'] }, // orange
+  { id: 'controls', labelKey: 'nav.controls', Icon: Settings, accent: ['96 165 250', '59 130 246'] }, // blue
+  { id: 'pro', labelKey: 'nav.pro', Icon: Sparkles, accent: ['167 139 250', '139 92 246'] }, // violet
+  { id: 'hud', labelKey: 'nav.hud', Icon: LayoutGrid, accent: ['52 211 153', '16 185 129'] }, // emerald
+  { id: 'gyro', labelKey: 'nav.gyro', Icon: RotateCw, accent: ['34 211 238', '6 182 212'] }, // cyan
+  { id: 'recoil', labelKey: 'nav.recoil', Icon: TrendingUp, accent: ['251 113 133', '244 63 94'] }, // rose
+  { id: 'drill', labelKey: 'nav.drill', Icon: Target, accent: ['251 191 36', '245 158 11'] }, // amber
+  { id: 'ttk', labelKey: 'nav.ttk', Icon: Swords, accent: ['248 113 113', '239 68 68'] }, // red
+  { id: 'reaction', labelKey: 'nav.reaction', Icon: Zap, accent: ['163 230 53', '132 204 22'] }, // lime
+  { id: 'falloff', labelKey: 'nav.falloff', Icon: TrendingDown, accent: ['244 114 182', '236 72 153'] }, // pink
+  { id: 'loadout', labelKey: 'nav.loadout', Icon: Backpack, accent: ['45 212 191', '20 184 166'] }, // teal
+  { id: 'crosshair', labelKey: 'nav.crosshair', Icon: Plus, accent: ['129 140 248', '99 102 241'] }, // indigo
+  { id: 'device', labelKey: 'nav.device', Icon: Smartphone, accent: ['232 121 249', '217 70 239'] }, // fuchsia
+  { id: 'maps', labelKey: 'nav.maps', Icon: Map, accent: ['74 222 128', '34 197 94'] }, // green
+  { id: 'tips', labelKey: 'nav.tips', Icon: Lightbulb, accent: ['250 204 21', '234 179 8'] }, // yellow
 ];
 
 export default function App() {
@@ -108,15 +129,26 @@ function Shell({
     return () => window.removeEventListener('pubgm:nav', handler);
   }, [setTab]);
 
+  // Set CSS vars for current module's accent
+  const navItem = NAV.find((n) => n.id === tab) ?? NAV[0];
+  const moduleStyle = {
+    ['--module-accent' as string]: navItem.accent[0],
+    ['--module-accent-2' as string]: navItem.accent[1],
+  } as React.CSSProperties;
+
   return (
-    <div className="mx-auto flex min-h-full max-w-[440px] flex-col bg-bg">
-      <Header
+    <div
+      className="mx-auto flex min-h-full max-w-[440px] flex-col"
+      style={moduleStyle}
+    >
+      <Hero
+        tab={tab}
+        navItem={navItem}
         bannerDismissed={bannerDismissed}
         showBanner={() => setBannerDismissed(false)}
-        tab={tab}
       />
       <TopTabStrip tab={tab} setTab={setTab} />
-      <main className="min-w-0 flex-1 space-y-3 px-4 pb-28 pt-4">
+      <main className="min-w-0 flex-1 space-y-3 px-4 pb-32 pt-3">
         {!bannerDismissed && (
           <ExplainerBanner onDismiss={() => setBannerDismissed(true)} />
         )}
@@ -136,7 +168,6 @@ function TopTabStrip({
 }) {
   const { t } = useI18n();
   const stripRef = useRef<HTMLDivElement | null>(null);
-  // Auto-scroll active tab into view
   useEffect(() => {
     const el = stripRef.current?.querySelector<HTMLButtonElement>(
       `[data-tab-id="${tab}"]`,
@@ -144,31 +175,36 @@ function TopTabStrip({
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
   }, [tab]);
   return (
-    <div className="sticky top-[60px] z-10 bg-bg">
+    <div className="sticky top-0 z-20 bg-gradient-to-b from-bg via-bg to-bg/0 pb-2 pt-2">
       <div
         ref={stripRef}
-        className="no-scrollbar flex gap-2 overflow-x-auto px-4 py-2.5"
+        className="no-scrollbar flex gap-2 overflow-x-auto px-4"
       >
         {NAV.map((n) => {
           const active = tab === n.id;
+          const Icon = n.Icon;
+          const accentStyle = {
+            ['--module-accent' as string]: n.accent[0],
+            ['--module-accent-2' as string]: n.accent[1],
+          } as React.CSSProperties;
           return (
             <button
               key={n.id}
               data-tab-id={n.id}
               onClick={() => setTab(n.id)}
-              className={`relative inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12.5px] font-medium transition ${
+              style={active ? accentStyle : undefined}
+              className={`relative inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-[12.5px] font-semibold transition active:scale-[0.96] ${
                 active
-                  ? 'bg-accent text-bg'
-                  : 'bg-panel-soft text-text-soft hover:text-text'
+                  ? 'hero-grad text-white shadow-[0_6px_18px_-4px_rgb(var(--module-accent)/0.6)]'
+                  : 'border border-line bg-panel-soft/70 text-text-soft hover:text-text'
               }`}
             >
-              <span className="text-[13px] leading-none">{n.icon}</span>
+              <Icon className="h-3.5 w-3.5" strokeWidth={2.4} />
               <span className="whitespace-nowrap">{t(n.labelKey)}</span>
             </button>
           );
         })}
       </div>
-      <div className="h-px bg-line/60" />
     </div>
   );
 }
@@ -190,48 +226,54 @@ function BottomNav({
 }) {
   const { t } = useI18n();
   return (
-    <nav
-      className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-[440px] border-t border-line bg-bg/98 backdrop-blur"
-      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+    <div
+      className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto flex max-w-[440px] justify-center px-3 pt-3"
+      style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}
     >
-      <div className="grid grid-cols-5">
+      <nav className="pointer-events-auto flex w-full items-center gap-1 rounded-full border border-line/80 bg-panel/95 p-1.5 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.7)] backdrop-blur-xl">
         {PRIMARY_TABS.map((id) => {
           const item = NAV.find((n) => n.id === id);
           if (!item) return null;
           const active = tab === id;
+          const Icon = item.Icon;
+          const accentStyle = {
+            ['--module-accent' as string]: item.accent[0],
+            ['--module-accent-2' as string]: item.accent[1],
+          } as React.CSSProperties;
           return (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`group flex min-h-[60px] flex-col items-center justify-center gap-1 px-1 py-2 transition ${
-                active ? 'text-accent' : 'text-text-dim hover:text-text-soft'
+              aria-label={t(`nav.short.${id}`)}
+              style={active ? accentStyle : undefined}
+              className={`flex min-h-[48px] flex-1 flex-col items-center justify-center gap-0.5 rounded-full px-1.5 py-2 transition active:scale-[0.96] ${
+                active
+                  ? 'hero-grad text-white shadow-[0_4px_12px_-2px_rgb(var(--module-accent)/0.55)]'
+                  : 'text-text-soft hover:text-text'
               }`}
             >
-              <span className="text-[19px] leading-none">{item.icon}</span>
-              <span className="text-[10px] font-medium leading-none">
+              <Icon className="h-[18px] w-[18px]" strokeWidth={2.4} />
+              <span className="text-[10px] font-semibold leading-none">
                 {t(`nav.short.${id}`)}
               </span>
             </button>
           );
         })}
-      </div>
-    </nav>
+      </nav>
+    </div>
   );
 }
 
 function ExplainerBanner({ onDismiss }: { onDismiss: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="rounded-2xl border border-accent/25 bg-accent/[0.06] p-4">
+    <div className="card-glass relative overflow-hidden rounded-3xl border border-line bg-panel/70 p-4 backdrop-blur-sm">
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent/15 text-accent">
-          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 8h.01M11 12h1v5h1" strokeLinecap="round" />
-          </svg>
+        <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-2xl module-tint">
+          <Info className="h-4 w-4" strokeWidth={2.4} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-semibold text-text">
+          <div className="font-display text-[14.5px] font-bold text-text">
             {t('app.banner.title')}
           </div>
           <p className="mt-1 text-[13px] leading-relaxed text-text-soft">
@@ -239,7 +281,7 @@ function ExplainerBanner({ onDismiss }: { onDismiss: () => void }) {
           </p>
           <button
             onClick={onDismiss}
-            className="mt-2.5 text-[12.5px] font-medium text-accent hover:text-accent-2"
+            className="mt-2.5 text-[12.5px] font-semibold text-module hover:opacity-80"
           >
             {t('app.banner.dismiss')}
           </button>
@@ -249,73 +291,89 @@ function ExplainerBanner({ onDismiss }: { onDismiss: () => void }) {
   );
 }
 
-function Header({
+function Hero({
   bannerDismissed,
   showBanner,
   tab,
+  navItem,
 }: {
   bannerDismissed: boolean;
   showBanner: () => void;
   tab: ModuleId;
+  navItem: NavItem;
 }) {
   const { t } = useI18n();
-  const navItem = NAV.find((n) => n.id === tab);
+  const Icon = navItem.Icon;
+  // Re-trigger animation when module changes
   return (
-    <header className="sticky top-0 z-20 bg-bg/95 backdrop-blur">
-      <div className="flex items-center gap-3 px-4 pt-3 pb-2">
-        <Logo />
-        <div className="min-w-0 flex-1 leading-tight">
-          <div className="text-[11px] font-medium text-text-dim">
-            PUBGM Toolkit
+    <header className="relative px-4 pt-5">
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="hero-grad grid h-10 w-10 place-items-center rounded-2xl shadow-[0_8px_22px_-6px_rgb(var(--module-accent)/0.7)]">
+            <Crosshair className="h-5 w-5 text-white" strokeWidth={2.5} />
           </div>
-          <div className="truncate text-[17px] font-semibold tracking-tight text-text">
-            {navItem ? t(navItem.labelKey) : 'PUBGM Toolkit'}
+          <div className="leading-tight">
+            <div className="font-display text-[15px] font-bold tracking-tight text-text">
+              PUBGM Toolkit
+            </div>
+            <div className="text-[11px] font-medium text-text-dim">
+              v0.2 · S{30}
+            </div>
           </div>
         </div>
-        {bannerDismissed && (
-          <button
-            onClick={showBanner}
-            aria-label={t('app.banner.show')}
-            className="grid h-9 w-9 place-items-center rounded-full bg-panel-soft text-text-soft hover:text-text"
-          >
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 8h.01M11 12h1v5h1" strokeLinecap="round" />
-            </svg>
-          </button>
-        )}
-        <LangSwitcher />
+        <div className="flex items-center gap-2">
+          {bannerDismissed && (
+            <button
+              onClick={showBanner}
+              aria-label={t('app.banner.show')}
+              className="grid h-9 w-9 place-items-center rounded-full border border-line bg-panel/80 text-text-soft hover:text-text"
+            >
+              <Info className="h-4 w-4" strokeWidth={2.2} />
+            </button>
+          )}
+          <LangSwitcher />
+        </div>
+      </div>
+
+      {/* Big hero card */}
+      <div
+        key={tab}
+        className="hero-grad pop-in relative overflow-hidden rounded-3xl p-5 shadow-[0_18px_50px_-12px_rgb(var(--module-accent)/0.55)]"
+      >
+        {/* Decorative bg blobs */}
+        <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
+        <div className="pointer-events-none absolute -bottom-8 -left-6 h-32 w-32 rounded-full bg-black/15 blur-2xl" />
+        <div className="relative flex items-end justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-white/80">
+              {t('app.hero.eyebrow')}
+            </div>
+            <h1 className="mt-1.5 font-display text-[26px] font-extrabold leading-[1.1] tracking-tight text-white">
+              {t(navItem.labelKey)}
+            </h1>
+            <p className="mt-2 text-[13px] font-medium leading-snug text-white/85">
+              {t(`module.${tab}.tagline`)}
+            </p>
+          </div>
+          <div className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-white/15 backdrop-blur-sm">
+            <Icon className="h-8 w-8 text-white" strokeWidth={2.2} />
+          </div>
+        </div>
       </div>
     </header>
-  );
-}
-
-function Logo() {
-  return (
-    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent">
-      <svg
-        viewBox="0 0 32 32"
-        className="h-5 w-5 text-bg"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-      >
-        <circle cx="16" cy="16" r="6" />
-        <path d="M16 4v5M16 23v5M4 16h5M23 16h5" strokeLinecap="round" />
-        <circle cx="16" cy="16" r="1.5" fill="currentColor" />
-      </svg>
-    </div>
   );
 }
 
 function LangSwitcher() {
   const { lang, setLang } = useI18n();
   return (
-    <div className="inline-flex overflow-hidden rounded-full bg-panel-soft p-0.5 text-[11px] font-semibold">
+    <div className="inline-flex overflow-hidden rounded-full border border-line bg-panel/80 p-0.5 text-[11px] font-bold backdrop-blur-sm">
       <button
         onClick={() => setLang('ru')}
         className={`rounded-full px-2.5 py-1 transition ${
-          lang === 'ru' ? 'bg-accent text-bg' : 'text-text-soft hover:text-text'
+          lang === 'ru'
+            ? 'hero-grad text-white shadow-sm'
+            : 'text-text-soft hover:text-text'
         }`}
       >
         RU
@@ -323,7 +381,9 @@ function LangSwitcher() {
       <button
         onClick={() => setLang('en')}
         className={`rounded-full px-2.5 py-1 transition ${
-          lang === 'en' ? 'bg-accent text-bg' : 'text-text-soft hover:text-text'
+          lang === 'en'
+            ? 'hero-grad text-white shadow-sm'
+            : 'text-text-soft hover:text-text'
         }`}
       >
         EN

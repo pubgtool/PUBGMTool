@@ -1,4 +1,9 @@
-import type { ReactNode, ButtonHTMLAttributes, SelectHTMLAttributes, InputHTMLAttributes } from 'react';
+import type {
+  ReactNode,
+  ButtonHTMLAttributes,
+  SelectHTMLAttributes,
+  InputHTMLAttributes,
+} from 'react';
 
 export function Card({
   title,
@@ -12,17 +17,17 @@ export function Card({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-line bg-panel/95 p-4">
+    <section className="card-glass relative overflow-hidden rounded-3xl border border-line bg-panel/80 p-5 backdrop-blur-sm">
       {(title || right) && (
-        <header className="mb-3 flex items-start justify-between gap-3">
+        <header className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
             {title && (
-              <h2 className="text-[15px] font-semibold tracking-tight text-text">
+              <h2 className="font-display text-[17px] font-bold tracking-tight text-text">
                 {title}
               </h2>
             )}
             {subtitle && (
-              <p className="mt-1 text-[13px] leading-relaxed text-text-soft">
+              <p className="mt-1 text-[13.5px] leading-relaxed text-text-soft">
                 {subtitle}
               </p>
             )}
@@ -43,12 +48,12 @@ export function Button({
   variant?: 'default' | 'primary' | 'ghost' | 'danger';
 }) {
   const base =
-    'inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none';
+    'inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-[14px] font-semibold transition active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none';
   const map = {
     default:
       'bg-panel-soft text-text hover:bg-line border border-line',
     primary:
-      'bg-accent text-bg hover:bg-accent-2 shadow-sm',
+      'hero-grad text-white shadow-[0_8px_24px_-6px_rgb(var(--module-accent)/0.6)]',
     ghost: 'text-text-soft hover:text-text hover:bg-panel-soft',
     danger: 'bg-bad/15 text-bad border border-bad/30 hover:bg-bad/25',
   } as const;
@@ -62,10 +67,10 @@ export function Pill({
   return (
     <button
       {...rest}
-      className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12.5px] font-medium transition ${
+      className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[12.5px] font-semibold transition active:scale-[0.97] ${
         active
-          ? 'bg-accent text-bg'
-          : 'bg-panel-soft text-text-soft hover:text-text border border-line'
+          ? 'hero-grad text-white shadow-[0_4px_14px_-4px_rgb(var(--module-accent)/0.6)]'
+          : 'border border-line bg-panel-soft text-text-soft hover:text-text'
       } ${rest.className ?? ''}`}
     />
   );
@@ -95,7 +100,7 @@ export function Slider({
       {label !== undefined && (
         <div className="flex items-center justify-between">
           <span className="text-[13px] text-text-soft">{label}</span>
-          <span className="font-mono text-[13px] font-semibold text-text">
+          <span className="font-mono text-[13px] font-bold text-module">
             {value}
             {unit ?? ''}
           </span>
@@ -120,7 +125,7 @@ export function Select({
   return (
     <select
       {...rest}
-      className={`w-full rounded-xl border border-line bg-panel-soft px-3.5 py-2.5 text-sm text-text focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-2xl border border-line bg-panel-soft px-4 py-3 text-[14px] text-text focus:border-line-bright focus:outline-none ${className}`}
     />
   );
 }
@@ -133,7 +138,7 @@ export function NumberInput({
     <input
       type="number"
       {...rest}
-      className={`w-full rounded-xl border border-line bg-panel-soft px-3.5 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-2xl border border-line bg-panel-soft px-4 py-3 font-mono text-[14px] text-text focus:border-line-bright focus:outline-none ${className}`}
     />
   );
 }
@@ -145,7 +150,7 @@ export function TextInput({
   return (
     <input
       {...rest}
-      className={`w-full rounded-xl border border-line bg-panel-soft px-3.5 py-2.5 text-sm text-text focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-2xl border border-line bg-panel-soft px-4 py-3 text-[14px] text-text focus:border-line-bright focus:outline-none ${className}`}
     />
   );
 }
@@ -169,12 +174,14 @@ export function Stat({
         : tone === 'bad'
           ? 'text-bad'
           : tone === 'accent'
-            ? 'text-accent'
+            ? 'text-module'
             : 'text-text';
   return (
-    <div className="rounded-xl border border-line bg-panel-soft p-3.5">
-      <div className="text-[11px] font-medium text-text-dim">{label}</div>
-      <div className={`mt-1 font-mono text-[22px] font-semibold ${color}`}>
+    <div className="card-glass rounded-2xl border border-line bg-panel-soft/60 p-4">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-dim">
+        {label}
+      </div>
+      <div className={`mt-1.5 font-display text-[26px] font-bold ${color}`}>
         {value}
       </div>
       {hint && <div className="mt-1 text-[12px] text-text-soft">{hint}</div>}
@@ -194,11 +201,11 @@ export function Badge({
     good: 'border-good/30 text-good bg-good/10',
     warn: 'border-warn/30 text-warn bg-warn/10',
     bad: 'border-bad/30 text-bad bg-bad/10',
-    accent: 'border-accent/30 text-accent bg-accent/10',
+    accent: 'border-line text-module module-tint',
   };
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${map[tone]}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${map[tone]}`}
     >
       {children}
     </span>
