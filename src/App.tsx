@@ -17,10 +17,12 @@ const DeviceProfile = lazy(() => import('./modules/DeviceProfile'));
 const DropSpots = lazy(() => import('./modules/DropSpots'));
 const TipsCoach = lazy(() => import('./modules/TipsCoach'));
 const ControlsSetup = lazy(() => import('./modules/ControlsSetup'));
+const ProTweaks = lazy(() => import('./modules/ProTweaks'));
 
 type ModuleId =
   | 'sensitivity'
   | 'controls'
+  | 'pro'
   | 'hud'
   | 'gyro'
   | 'recoil'
@@ -43,6 +45,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { id: 'sensitivity', labelKey: 'nav.sensitivity', icon: '◎' },
   { id: 'controls', labelKey: 'nav.controls', icon: '⚙' },
+  { id: 'pro', labelKey: 'nav.pro', icon: '★' },
   { id: 'hud', labelKey: 'nav.hud', icon: '⊞' },
   { id: 'gyro', labelKey: 'nav.gyro', icon: '⟲' },
   { id: 'recoil', labelKey: 'nav.recoil', icon: '↑' },
@@ -302,6 +305,8 @@ function renderModule(id: ModuleId) {
       return <SensitivityBuilder />;
     case 'controls':
       return <ControlsSetup />;
+    case 'pro':
+      return <ProTweaks />;
     case 'hud':
       return <HudLayoutGenerator />;
     case 'gyro':

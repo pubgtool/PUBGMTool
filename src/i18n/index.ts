@@ -11,6 +11,7 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Sensitivity Builder · HUD Layout · Gyro · Recoil Lab · Headshot Trainer · TTK Calculator',
     'nav.sensitivity': 'Sensitivity Builder',
     'nav.controls': 'Controls Setup',
+    'nav.pro': 'Pro Tweaks',
     'nav.hud': 'HUD Layout',
     'nav.gyro': 'Gyro Calibration',
     'nav.recoil': 'Recoil Lab',
@@ -217,6 +218,155 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Не включай Drag Fire вместе с гиро. Это две разные системы свайпа, они конфликтуют.',
     'controls.gyroAds.dont.3':
       'Не меняй значения на ±50 за день. Подкручивай ±5 и тренируй неделю — иначе мышечная память сбросится.',
+    'pro.title': 'Pro Tweaks · продвинутые настройки',
+    'pro.lead':
+      '23 настройки, которые юзают про-игроки и стримеры — все легальные, все внутри Settings PUBG Mobile. Без читов, аимботов и модов.',
+    'pro.intro':
+      'Среднестатистический игрок открывает Settings → Sensitivity и закрывает приложение. Про-игрок проходится по всем разделам и выкручивает 20+ опций под visibility, скорость пикапа, скорость прицеливания и подавление лишнего ввода. Ниже — этот список.',
+    'pro.disclaimer.title': 'Это легальные настройки, не читы',
+    'pro.disclaimer.body':
+      'Всё, что ниже — стандартные опции в меню PUBG Mobile. Никаких aimbot/wallhack/ESP/модов APK/macros под отдачу/memory edit здесь нет и не будет — за такое аккаунт банится на 10 лет вместе с устройством. Эти настройки даёт сама игра, ими пользуются Soul Mortal, Levinho, ScoutOP и тд.',
+    'pro.filter.all': 'Все',
+    'pro.tag.recommended': 'Pro',
+    'pro.cat.visibility': 'Видимость',
+    'pro.cat.visibility.desc':
+      'Настройки графики и цвета, которые делают врага заметнее на любой дистанции.',
+    'pro.cat.audio': 'Звук',
+    'pro.cat.audio.desc':
+      'Звук в PUBGM это половина информации. 3D-звук + визуализация шагов = знаешь где враг ещё до того, как его увидел.',
+    'pro.cat.hud': 'HUD и скорость',
+    'pro.cat.hud.desc':
+      'Опции, ускоряющие пикап лута, прицел и пометку врага. Каждая — секунда выигранного времени.',
+    'pro.cat.aim': 'Прицел и стрельба',
+    'pro.cat.aim.desc':
+      'Тонкие настройки прицеливания, которые дают консистентную картинку и нет лагов между ADS и стрельбой.',
+    'pro.cat.qol': 'Quality of Life',
+    'pro.cat.qol.desc':
+      'Настройки, которые подавляют лишний ввод и шум — чтобы ты концентрировался на бою, а не на тапах по экрану.',
+
+    // Visibility
+    'pro.tweak.graphics_smooth_ultra.path': 'Settings → Graphics → Quality / Frame Rate',
+    'pro.tweak.graphics_smooth_ultra.option': 'Quality = Smooth, Frame Rate = Ultra (или Extreme)',
+    'pro.tweak.graphics_smooth_ultra.reason':
+      'Smooth + Ultra даёт минимум визуальных эффектов и максимум FPS. Без лишних теней и pp-фильтров враг становится контрастной фигурой на чистом фоне. На iPhone 13 Pro / Snapdragon 8 Gen 1+ выбирай Extreme (90 FPS) или Ultra Extreme (120 FPS).',
+    'pro.tweak.graphics_smooth_ultra.warn':
+      'Если девайс греется и троттлит на Smooth+Ultra — спускайся на Balanced+Ultra. Стабильные 60 FPS лучше скачущих 90.',
+    'pro.tweak.style_colorful.path': 'Settings → Graphics → Style',
+    'pro.tweak.style_colorful.option': 'Colorful',
+    'pro.tweak.style_colorful.reason':
+      'Стили Realistic / Classic снижают насыщенность — враг сливается с травой и серыми зданиями. Colorful задирает saturation: красная одежда, оранжевые вспышки, кровь — всё видно на километр.',
+    'pro.tweak.brightness_max.path': 'Settings → Graphics → Brightness',
+    'pro.tweak.brightness_max.option': 'Brightness = 100%',
+    'pro.tweak.brightness_max.reason':
+      'Тёмные комнаты Ливика / Сахоока на дефолтной яркости — чёрная стена. На 100% видно силуэт врага в тени и под лестницей. Системную яркость экрана при этом ставь ~70% — чтобы не выгорал AMOLED.',
+    'pro.tweak.colorblind_mode.path': 'Settings → Basic → Colorblind Mode',
+    'pro.tweak.colorblind_mode.option': 'Deuteranopia (или Protanopia)',
+    'pro.tweak.colorblind_mode.reason':
+      'Не баг — фича. Кровь и hit-маркер становятся ярко-жёлтыми / оранжевыми вместо красно-серых. Прямо видно, где попал и какой урон. Юзают даже игроки без дальтонизма.',
+    'pro.tweak.shadows_off.path': 'Settings → Graphics → Shadows',
+    'pro.tweak.shadows_off.option': 'OFF',
+    'pro.tweak.shadows_off.reason':
+      'Тени врагов на земле могут палить позицию, НО твои собственные тени в кустах прячут тебя в плохую сторону. Большинство pro отключает — стабильнее FPS и меньше визуального мусора в перестрелке.',
+
+    // Audio
+    'pro.tweak.spatial_sound.path': 'Settings → Audio → Spatial / 3D Sound',
+    'pro.tweak.spatial_sound.option': 'ON',
+    'pro.tweak.spatial_sound.reason':
+      'Включает HRTF-обработку: ты различаешь шаги слева/справа, сверху/снизу, на расстоянии. Без 3D-звука всё в моно — узнать «второй этаж или подвал» невозможно. Обязательно с наушниками.',
+    'pro.tweak.sound_visualizer.path': 'Settings → Audio → Sound Effect Visualization',
+    'pro.tweak.sound_visualizer.option': 'ON (если играешь без наушников)',
+    'pro.tweak.sound_visualizer.reason':
+      'Включает мини-индикатор вокруг компаса: показывает направление шагов, выстрелов и машин. Не замена звуку, но спасает на динамике или в шумной комнате. Pro с хорошими наушниками часто отключают, чтобы не отвлекаться.',
+    'pro.tweak.music_off.path': 'Settings → Audio → Background Music',
+    'pro.tweak.music_off.option': 'OFF (Volume = 0)',
+    'pro.tweak.music_off.reason':
+      'Лобби-музыка занимает audio-слот и микширует со звуками шагов. Полностью выключай — ты сюда не за саундтреком. Включить можно только в training ground.',
+    'pro.tweak.voice_room_solo.path': 'Settings → Audio → Voice Chat',
+    'pro.tweak.voice_room_solo.option': 'Team Only (в команде) / OFF (соло)',
+    'pro.tweak.voice_room_solo.reason':
+      'All-room voice = русский, индийский и арабский маты в одном микшере → ты не услышишь шаги в 5 метрах. В соло отключай полностью, в команде оставляй только Team.',
+
+    // HUD
+    'pro.tweak.auto_open_scope.path': 'Settings → Basic → Auto-open Scope',
+    'pro.tweak.auto_open_scope.option': 'ON',
+    'pro.tweak.auto_open_scope.reason':
+      'Когда подбираешь оружие — оно автоматически встаёт с открытым прицелом без лишнего тапа. На close-range это разница между «убил первым» и «умер первым».',
+    'pro.tweak.wear_when_picked_up.path': 'Settings → Basic → Wear when picked up',
+    'pro.tweak.wear_when_picked_up.option': 'ON (для шлема, броника, рюкзака)',
+    'pro.tweak.wear_when_picked_up.reason':
+      'Поднял шлем второго уровня → он сразу надевается, даже если у тебя был первый. Без этой опции надо открывать рюкзак и тапать «надеть» — 2 секунды, в которые тебя могут уронить.',
+    'pro.tweak.mark_items_deathbox.path': 'Settings → Basic → Mark items in death box',
+    'pro.tweak.mark_items_deathbox.option': 'ON',
+    'pro.tweak.mark_items_deathbox.reason':
+      'Подбегая к деасбоксу видишь иконки лута заранее, ещё до открытия. Знаешь, стоит ли вообще тратить время или бежать дальше.',
+    'pro.tweak.quick_marker.path': 'Settings → Basic → Quick Marker',
+    'pro.tweak.quick_marker.option': 'Двойной тап на компас = маркер',
+    'pro.tweak.quick_marker.reason':
+      'Палец не отрывается от ввода — пометил направление врага в команде за 0.2 секунды. Без этого надо открывать карту и кликать, теряешь обзор.',
+    'pro.tweak.eject_empty_mags.path': 'Settings → Basic → Eject Empty Magazines',
+    'pro.tweak.eject_empty_mags.option': 'ON',
+    'pro.tweak.eject_empty_mags.reason':
+      'Пустой магазин выбрасывается из инвентаря автоматически. Ты не путаешься где расходник а где обвес, и пикап нового мага идёт быстрее.',
+
+    // Aim
+    'pro.tweak.fixed_crosshair_ads.path': 'Settings → Basic → Fixed Crosshair when ADS',
+    'pro.tweak.fixed_crosshair_ads.option': 'ON',
+    'pro.tweak.fixed_crosshair_ads.reason':
+      'Прицел в ADS не «болтается» от движения телефона. Это фактически снижает шум при гиро-наведении и позволяет точно стрелять очередью.',
+    'pro.tweak.scope_blur_off.path': 'Settings → Graphics → Scope Blur',
+    'pro.tweak.scope_blur_off.option': 'OFF',
+    'pro.tweak.scope_blur_off.reason':
+      'Размытие на краях скоупа красиво, но скрывает движение по периметру. Pro отключает — видишь, когда враг забегает за край и можешь увернуться.',
+    'pro.tweak.ads_during_reload.path': 'Settings → Basic → ADS during Reload',
+    'pro.tweak.ads_during_reload.option': 'OFF',
+    'pro.tweak.ads_during_reload.reason':
+      'Иначе если ты случайно тапнешь ADS во время перезарядки — она отменится, и ты останешься с пустым магазином в кадре. Лучше дать игре спокойно дозарядить.',
+    'pro.tweak.aim_assist_on.path': 'Settings → Basic → Aim Assist',
+    'pro.tweak.aim_assist_on.option': 'ON',
+    'pro.tweak.aim_assist_on.reason':
+      'Маленький pull прицела к ближайшему телу при ADS на дистанции <50 м. Не заменяет наведение, но даёт +5–10% хитрейта на close-range. Для новичков и средних — обязательно ON.',
+    'pro.tweak.aim_assist_on.warn':
+      'Топ-про иногда отключают, потому что Aim Assist «дёргает» прицел при стрельбе очередью с гиро-коррекцией. Если играешь от 4000 ELO — попробуй неделю с OFF.',
+    'pro.tweak.fire_button_top_corner.path': 'Settings → Customize → Fire button position',
+    'pro.tweak.fire_button_top_corner.option': 'Кнопка справа сверху + дублирующая слева',
+    'pro.tweak.fire_button_top_corner.reason':
+      'Стандартная кнопка огня по центру справа — медленно для 4-finger claw. Ставь основную справа сверху (под указательный) и дублирующую слева сверху (для левого пика). Так не отрывая больших пальцев со стиков можешь стрелять.',
+
+    // QoL
+    'pro.tweak.auto_pickup_priority.path': 'Settings → Basic → Auto Pick Up',
+    'pro.tweak.auto_pickup_priority.option': 'Только аптечки/энергетики',
+    'pro.tweak.auto_pickup_priority.reason':
+      'Автопикап «всё подряд» забивает рюкзак барахлом и крадёт пинг при луте. Оставь только healing items — они нужны всегда и быстро.',
+    'pro.tweak.quick_chat_off.path': 'Settings → Basic → Quick Chat in Match',
+    'pro.tweak.quick_chat_off.option': 'OFF (для соло) / только базовые (для команды)',
+    'pro.tweak.quick_chat_off.reason':
+      'Случайный тап на quick-chat выскакивает в перестрелке и блокирует половину экрана на 3 секунды. Если играешь соло — отключай. В команде оставляй базовый набор без 30 эмоций.',
+    'pro.tweak.vehicle_camera_lock.path': 'Settings → Basic → Vehicle Camera Lock',
+    'pro.tweak.vehicle_camera_lock.option': 'OFF',
+    'pro.tweak.vehicle_camera_lock.reason':
+      'Блокирует камеру в направлении движения тачки. Мешает быстро глянуть назад / по сторонам. Pro отключает: камера свободно крутится, видишь preсs за тобой.',
+    'pro.tweak.haptic_off.path': 'Settings → Basic → Haptic Feedback',
+    'pro.tweak.haptic_off.option': 'OFF',
+    'pro.tweak.haptic_off.reason':
+      'Вибрация при стрельбе мешает гиро-наведению (физический шум на гироскоп) и сажает батарею. Pro выключают — фокус остаётся на отдаче, а не на дрожащем телефоне.',
+    'pro.tweak.background_apps_off.path': 'iOS / Android → закрыть фоновые приложения',
+    'pro.tweak.background_apps_off.option': 'Перед матчем = только PUBG Mobile',
+    'pro.tweak.background_apps_off.reason':
+      'YouTube/Discord/WhatsApp в фоне крадут RAM и CPU → троттлинг и FPS-просадки. На iPhone 13 Pro особенно: iOS агрессивно паркует процессы, но активные таймеры всё равно «дёргают» CPU. Свайп вверх → закрыл всё → запускай PUBGM.',
+
+    'pro.checklist.title': '5-минутный чеклист перед игрой',
+    'pro.checklist.lead':
+      'Если дочитал до сюда — пройдись быстро по этому списку, и ты в топ-15% по подготовке среди всех игроков на твоём ранге.',
+    'pro.checklist.step1':
+      'Закрыл фоновые приложения (свайп вверх → закрыть все). PUBG Mobile = единственное активное.',
+    'pro.checklist.step2':
+      'Включил Gyroscope = Always On (см. Controls Setup), яркость в игре = 100%, цветовая схема = Colorful.',
+    'pro.checklist.step3':
+      'Прогнал Gyro Calibration в нашем модуле (10 секунд, фиксит дрифт телефона).',
+    'pro.checklist.step4':
+      '5–10 минут на тренировочном острове: проверил отдачу M416/AKM, попадание в голову на 50 м, скорость переключения оружия.',
+    'pro.checklist.step5':
+      'Зашёл в матч с наушниками, music = OFF, voice = только команда.',
     'hud.title': 'HUD Layout Generator',
     'hud.lead':
       'Тащи кнопки куда удобно. Координаты нормализованы — раскладка одинаково ляжет на любое разрешение экрана.',
@@ -386,6 +536,7 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Sensitivity Builder · HUD Layout · Gyro · Recoil Lab · Headshot Trainer · TTK Calculator',
     'nav.sensitivity': 'Sensitivity Builder',
     'nav.controls': 'Controls Setup',
+    'nav.pro': 'Pro Tweaks',
     'nav.hud': 'HUD Layout',
     'nav.gyro': 'Gyro Calibration',
     'nav.recoil': 'Recoil Lab',
@@ -592,6 +743,155 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Don\u2019t enable Drag Fire alongside gyro. Two different swipe systems competing for the same input.',
     'controls.gyroAds.dont.3':
       'Don\u2019t move values by ±50 in a day. Tweak ±5 and train for a week — otherwise muscle memory resets.',
+    'pro.title': 'Pro Tweaks · advanced settings',
+    'pro.lead':
+      '23 settings used by pros and streamers — all legal, all inside PUBG Mobile\u2019s own Settings menu. No cheats, aimbots, or mods.',
+    'pro.intro':
+      'The average player opens Settings → Sensitivity once and closes the app. A pro walks through every section and dials in 20+ options for visibility, pickup speed, ADS speed, and noise suppression. The list is below.',
+    'pro.disclaimer.title': 'These are legal settings, not cheats',
+    'pro.disclaimer.body':
+      'Everything below is a stock option in PUBG Mobile\u2019s own menus. No aimbot / wallhack / ESP / modded APK / recoil macros / memory editors here — those get your account banned for 10 years along with the device. These are the settings the game itself ships, used by Soul Mortal, Levinho, ScoutOP, etc.',
+    'pro.filter.all': 'All',
+    'pro.tag.recommended': 'Pro',
+    'pro.cat.visibility': 'Visibility',
+    'pro.cat.visibility.desc':
+      'Graphics and color tweaks that make enemies stand out at any distance.',
+    'pro.cat.audio': 'Audio',
+    'pro.cat.audio.desc':
+      'Sound in PUBGM is half the information. 3D audio + footstep visualizer = you know where the enemy is before you see them.',
+    'pro.cat.hud': 'HUD & Speed',
+    'pro.cat.hud.desc':
+      'Options that speed up loot pickup, scope, and enemy marking. Each one buys you a second.',
+    'pro.cat.aim': 'Aim & Combat',
+    'pro.cat.aim.desc':
+      'Fine-grained aim tweaks for a consistent picture and zero lag between ADS and firing.',
+    'pro.cat.qol': 'Quality of Life',
+    'pro.cat.qol.desc':
+      'Settings that suppress noise and stray input so you focus on the fight, not on screen taps.',
+
+    // Visibility
+    'pro.tweak.graphics_smooth_ultra.path': 'Settings → Graphics → Quality / Frame Rate',
+    'pro.tweak.graphics_smooth_ultra.option': 'Quality = Smooth, Frame Rate = Ultra (or Extreme)',
+    'pro.tweak.graphics_smooth_ultra.reason':
+      'Smooth + Ultra means minimal visual effects and max FPS. No fancy shadows or post-processing — enemies become high-contrast silhouettes on a clean background. On iPhone 13 Pro / Snapdragon 8 Gen 1+ pick Extreme (90 FPS) or Ultra Extreme (120 FPS).',
+    'pro.tweak.graphics_smooth_ultra.warn':
+      'If the device throttles on Smooth+Ultra — drop to Balanced+Ultra. Stable 60 FPS beats jittery 90.',
+    'pro.tweak.style_colorful.path': 'Settings → Graphics → Style',
+    'pro.tweak.style_colorful.option': 'Colorful',
+    'pro.tweak.style_colorful.reason':
+      'Realistic / Classic lower saturation, blending enemies with grass and grey buildings. Colorful boosts saturation: red clothing, orange muzzle flash, blood — visible from a kilometer.',
+    'pro.tweak.brightness_max.path': 'Settings → Graphics → Brightness',
+    'pro.tweak.brightness_max.option': 'Brightness = 100%',
+    'pro.tweak.brightness_max.reason':
+      'Dark Livik / Sanhok rooms at default brightness are a black wall. At 100% you see silhouettes in shadow and under stairs. Set system brightness to ~70% so the AMOLED doesn\u2019t burn in.',
+    'pro.tweak.colorblind_mode.path': 'Settings → Basic → Colorblind Mode',
+    'pro.tweak.colorblind_mode.option': 'Deuteranopia (or Protanopia)',
+    'pro.tweak.colorblind_mode.reason':
+      'Not a bug, a feature. Blood and hit markers turn bright yellow / orange instead of red-grey. You see exactly where you hit and how much damage. Even non-colorblind pros use it.',
+    'pro.tweak.shadows_off.path': 'Settings → Graphics → Shadows',
+    'pro.tweak.shadows_off.option': 'OFF',
+    'pro.tweak.shadows_off.reason':
+      'Enemy ground shadows can give away their position, BUT your own shadows in bushes hide you the wrong way. Most pros disable — more stable FPS and less visual clutter mid-fight.',
+
+    // Audio
+    'pro.tweak.spatial_sound.path': 'Settings → Audio → Spatial / 3D Sound',
+    'pro.tweak.spatial_sound.option': 'ON',
+    'pro.tweak.spatial_sound.reason':
+      'Enables HRTF processing: you hear footsteps left/right, above/below, far/near. Without 3D sound everything is mono — "second floor or basement?" is unanswerable. Mandatory with headphones.',
+    'pro.tweak.sound_visualizer.path': 'Settings → Audio → Sound Effect Visualization',
+    'pro.tweak.sound_visualizer.option': 'ON (if playing without headphones)',
+    'pro.tweak.sound_visualizer.reason':
+      'Adds a mini-indicator around the compass: shows direction of footsteps, gunshots, vehicles. Not a substitute for sound, but saves you in a noisy room. Pros with good headphones often turn it off to avoid distraction.',
+    'pro.tweak.music_off.path': 'Settings → Audio → Background Music',
+    'pro.tweak.music_off.option': 'OFF (Volume = 0)',
+    'pro.tweak.music_off.reason':
+      'Lobby music takes an audio slot and mixes with footsteps. Disable completely — you\u2019re not here for the soundtrack. Re-enable only on training ground.',
+    'pro.tweak.voice_room_solo.path': 'Settings → Audio → Voice Chat',
+    'pro.tweak.voice_room_solo.option': 'Team Only (squads) / OFF (solo)',
+    'pro.tweak.voice_room_solo.reason':
+      'All-room voice mixes Russian, Indian, and Arabic chatter together → you won\u2019t hear footsteps 5 meters away. Solo: turn off. Squad: keep Team only.',
+
+    // HUD
+    'pro.tweak.auto_open_scope.path': 'Settings → Basic → Auto-open Scope',
+    'pro.tweak.auto_open_scope.option': 'ON',
+    'pro.tweak.auto_open_scope.reason':
+      'When you pick up a weapon it equips with the scope already open — no extra tap. In close range that\u2019s the difference between killing first and dying first.',
+    'pro.tweak.wear_when_picked_up.path': 'Settings → Basic → Wear when picked up',
+    'pro.tweak.wear_when_picked_up.option': 'ON (helmet, vest, backpack)',
+    'pro.tweak.wear_when_picked_up.reason':
+      'Picked up a level-2 helmet → it equips immediately, even if you had a level-1. Without this you have to open the bag and tap "wear" — 2 seconds you can be downed in.',
+    'pro.tweak.mark_items_deathbox.path': 'Settings → Basic → Mark items in death box',
+    'pro.tweak.mark_items_deathbox.option': 'ON',
+    'pro.tweak.mark_items_deathbox.reason':
+      'You see the loot icons on the death crate before opening it. You decide instantly whether to loot or move on.',
+    'pro.tweak.quick_marker.path': 'Settings → Basic → Quick Marker',
+    'pro.tweak.quick_marker.option': 'Double-tap compass = marker',
+    'pro.tweak.quick_marker.reason':
+      'Your finger doesn\u2019t leave input — drop a direction marker for the squad in 0.2s. Without this you\u2019d open the map and click, losing visual on the fight.',
+    'pro.tweak.eject_empty_mags.path': 'Settings → Basic → Eject Empty Magazines',
+    'pro.tweak.eject_empty_mags.option': 'ON',
+    'pro.tweak.eject_empty_mags.reason':
+      'Empty mags drop from the inventory automatically. You don\u2019t mix consumables with attachments, and grabbing a fresh mag is faster.',
+
+    // Aim
+    'pro.tweak.fixed_crosshair_ads.path': 'Settings → Basic → Fixed Crosshair when ADS',
+    'pro.tweak.fixed_crosshair_ads.option': 'ON',
+    'pro.tweak.fixed_crosshair_ads.reason':
+      'Your crosshair doesn\u2019t wobble from phone movement. Reduces gyro noise and makes burst fire much more accurate.',
+    'pro.tweak.scope_blur_off.path': 'Settings → Graphics → Scope Blur',
+    'pro.tweak.scope_blur_off.option': 'OFF',
+    'pro.tweak.scope_blur_off.reason':
+      'Scope edge blur is pretty but hides peripheral movement. Pros disable — you spot enemies running into the edge and dodge in time.',
+    'pro.tweak.ads_during_reload.path': 'Settings → Basic → ADS during Reload',
+    'pro.tweak.ads_during_reload.option': 'OFF',
+    'pro.tweak.ads_during_reload.reason':
+      'Otherwise an accidental ADS tap mid-reload cancels it, leaving you empty in a fight. Better to let the game reload cleanly.',
+    'pro.tweak.aim_assist_on.path': 'Settings → Basic → Aim Assist',
+    'pro.tweak.aim_assist_on.option': 'ON',
+    'pro.tweak.aim_assist_on.reason':
+      'Tiny pull toward the closest body during ADS at <50m. Doesn\u2019t replace aim, but adds +5–10% hit rate in close range. Newbie / intermediate: leave ON.',
+    'pro.tweak.aim_assist_on.warn':
+      'Top pros sometimes disable because Aim Assist nudges the crosshair during gyro-corrected burst fire. If you\u2019re 4000+ ELO, try a week with OFF.',
+    'pro.tweak.fire_button_top_corner.path': 'Settings → Customize → Fire button position',
+    'pro.tweak.fire_button_top_corner.option': 'Top-right + duplicate top-left',
+    'pro.tweak.fire_button_top_corner.reason':
+      'The default center-right fire button is slow for 4-finger claw. Place primary top-right (under the index) and a duplicate top-left (for left peeks). You fire without lifting thumbs off the sticks.',
+
+    // QoL
+    'pro.tweak.auto_pickup_priority.path': 'Settings → Basic → Auto Pick Up',
+    'pro.tweak.auto_pickup_priority.option': 'Healing items only',
+    'pro.tweak.auto_pickup_priority.reason':
+      '"Pick up everything" auto fills your bag with junk and steals frame time on loot. Keep healing items only — they\u2019re always needed and quick.',
+    'pro.tweak.quick_chat_off.path': 'Settings → Basic → Quick Chat in Match',
+    'pro.tweak.quick_chat_off.option': 'OFF (solo) / basic only (squad)',
+    'pro.tweak.quick_chat_off.reason':
+      'A stray quick-chat tap mid-fight blocks half the screen for 3 seconds. Solo: disable. Squad: keep just the essentials, drop the 30 emojis.',
+    'pro.tweak.vehicle_camera_lock.path': 'Settings → Basic → Vehicle Camera Lock',
+    'pro.tweak.vehicle_camera_lock.option': 'OFF',
+    'pro.tweak.vehicle_camera_lock.reason':
+      'Locks the camera in the direction of travel. Stops you from glancing back / sideways quickly. Pros disable: free camera lets you see who\u2019s chasing.',
+    'pro.tweak.haptic_off.path': 'Settings → Basic → Haptic Feedback',
+    'pro.tweak.haptic_off.option': 'OFF',
+    'pro.tweak.haptic_off.reason':
+      'Vibration during firing physically shakes the phone — gyro reads it as motion noise. Also drains battery. Pros turn it off — focus stays on recoil, not on the rumbling phone.',
+    'pro.tweak.background_apps_off.path': 'iOS / Android → close background apps',
+    'pro.tweak.background_apps_off.option': 'Pre-match: only PUBG Mobile',
+    'pro.tweak.background_apps_off.reason':
+      'YouTube/Discord/WhatsApp in the background steal RAM and CPU → throttling, FPS drops. Especially on iPhone 13 Pro: iOS aggressively parks processes, but their timers still wake the CPU. Swipe up → close everything → then launch PUBGM.',
+
+    'pro.checklist.title': '5-minute pre-match checklist',
+    'pro.checklist.lead':
+      'If you read this far — run through the list and you\u2019re in the top-15% of preparation at your rank.',
+    'pro.checklist.step1':
+      'Closed background apps (swipe up → close all). PUBG Mobile is the only active app.',
+    'pro.checklist.step2':
+      'Gyroscope = Always On (see Controls Setup), in-game brightness = 100%, color style = Colorful.',
+    'pro.checklist.step3':
+      'Ran Gyro Calibration in our module (10 seconds, fixes phone drift).',
+    'pro.checklist.step4':
+      '5–10 minutes on training ground: checked M416/AKM recoil, headshots at 50m, weapon swap speed.',
+    'pro.checklist.step5':
+      'In-match with headphones, music = OFF, voice = team only.',
     'hud.title': 'HUD Layout Generator',
     'hud.lead':
       'Drag buttons where they feel right. Coordinates are normalized so the layout scales across screen sizes.',
