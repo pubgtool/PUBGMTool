@@ -1,7 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
 import { I18nContext, DICTIONARIES, type Lang, useI18n } from './i18n';
 import { useLocalStorage } from './hooks/useLocalStorage';
-import { Pill } from './components/UI';
 
 const SensitivityBuilder = lazy(() => import('./modules/SensitivityBuilder'));
 const HudLayoutGenerator = lazy(() => import('./modules/HudLayoutGenerator'));
@@ -87,7 +86,6 @@ function Shell({
   tab: ModuleId;
   setTab: (t: ModuleId) => void;
 }) {
-  const [navOpen, setNavOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useLocalStorage<boolean>(
     'pubgm.banner.dismissed',
     false,
@@ -103,7 +101,6 @@ function Shell({
       const next = detail?.tab;
       if (typeof next === 'string' && valid.has(next as ModuleId)) {
         setTab(next as ModuleId);
-        setNavOpen(false);
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     };
@@ -112,46 +109,142 @@ function Shell({
   }, [setTab]);
 
   return (
-    <div className="min-h-full">
+    <div className="mx-auto flex min-h-full max-w-[480px] flex-col">
       <Header
-        onMenu={() => setNavOpen((o) => !o)}
         bannerDismissed={bannerDismissed}
         showBanner={() => setBannerDismissed(false)}
       />
-      <div className="mx-auto max-w-[1400px] px-3 pt-3 md:px-6">
+      <TopTabStrip tab={tab} setTab={setTab} />
+      <main className="min-w-0 flex-1 px-3 pb-32 pt-3">
         {!bannerDismissed && (
           <ExplainerBanner onDismiss={() => setBannerDismissed(true)} />
         )}
-      </div>
-      <div className="mx-auto flex max-w-[1400px] gap-0 px-3 pb-12 pt-3 md:gap-6 md:px-6">
-        <Nav tab={tab} setTab={setTab} open={navOpen} setOpen={setNavOpen} />
-        <main className="min-w-0 flex-1">
-          <Suspense fallback={<ModuleSkeleton />}>{renderModule(tab)}</Suspense>
-        </main>
+        <Suspense fallback={<ModuleSkeleton />}>{renderModule(tab)}</Suspense>
+      </main>
+      <BottomNav tab={tab} setTab={setTab} />
+    </div>
+  );
+}
+
+function TopTabStrip({
+  tab,
+  setTab,
+}: {
+  tab: ModuleId;
+  setTab: (t: ModuleId) => void;
+}) {
+  const { t } = useI18n();
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  // Auto-scroll active tab into view
+  useEffect(() => {
+    const el = stripRef.current?.querySelector<HTMLButtonElement>(
+      `[data-tab-id="${tab}"]`,
+    );
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }, [tab]);
+  return (
+    <div className="sticky top-[64px] z-10 -mx-px border-b border-line/60 bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/55">
+      <div
+        ref={stripRef}
+        className="scrollbar-thin flex gap-1.5 overflow-x-auto px-3 py-2"
+        style={{ scrollbarGutter: 'stable' }}
+      >
+        {NAV.map((n) => {
+          const active = tab === n.id;
+          return (
+            <button
+              key={n.id}
+              data-tab-id={n.id}
+              onClick={() => setTab(n.id)}
+              className={`group relative inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.08em] transition ${
+                active
+                  ? 'pill-pulse border-accent bg-gradient-to-b from-accent to-[#d8881a] text-bg'
+                  : 'border-line bg-panel-soft/70 text-text-soft hover:border-accent/50 hover:text-accent'
+              }`}
+            >
+              <span className="text-base leading-none">{n.icon}</span>
+              <span className="whitespace-nowrap">{t(n.labelKey)}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
+  );
+}
+
+const PRIMARY_TABS: ModuleId[] = [
+  'sensitivity',
+  'controls',
+  'pro',
+  'tips',
+  'device',
+];
+
+function BottomNav({
+  tab,
+  setTab,
+}: {
+  tab: ModuleId;
+  setTab: (t: ModuleId) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <nav
+      className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-[480px] border-t border-line/80 bg-bg/95 backdrop-blur supports-[backdrop-filter]:bg-bg/85"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+    >
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/70 to-transparent" />
+      <div className="grid grid-cols-5">
+        {PRIMARY_TABS.map((id) => {
+          const item = NAV.find((n) => n.id === id);
+          if (!item) return null;
+          const active = tab === id;
+          return (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={`group relative flex min-h-[64px] flex-col items-center justify-center gap-1 px-1 py-2 transition ${
+                active ? 'text-accent' : 'text-text-dim hover:text-text-soft'
+              }`}
+            >
+              {active && (
+                <span className="absolute inset-x-3 top-0 h-[2px] rounded-b-md bg-accent shadow-[0_0_10px_rgba(245,165,36,0.8)]" />
+              )}
+              <span className="text-xl leading-none">{item.icon}</span>
+              <span className="text-center font-display text-[8.5px] font-bold uppercase leading-[1.1] tracking-[0.06em]">
+                {t(`nav.short.${id}`)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
   );
 }
 
 function ExplainerBanner({ onDismiss }: { onDismiss: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="mb-3 rounded-2xl border border-accent/40 bg-gradient-to-br from-accent/10 to-accent-2/10 p-4 md:p-5">
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/20 text-accent">
+    <div className="hud-corners relative mb-3 overflow-hidden rounded-xl border border-accent/45 bg-gradient-to-br from-accent/10 via-bg/60 to-accent-2/10 p-4 backdrop-blur-sm md:p-5">
+      <div className="pointer-events-none absolute inset-x-3 top-0 h-px bg-gradient-to-r from-transparent via-accent/80 to-transparent" />
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-accent via-accent-2 to-accent" />
+      <div className="flex items-start gap-3 pl-2">
+        <div className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-md border border-accent/50 bg-accent/15 text-accent shadow-[0_0_14px_-2px_rgba(245,165,36,0.55)]">
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.2">
             <circle cx="12" cy="12" r="9" />
             <path d="M12 8h.01M11 12h1v5h1" strokeLinecap="round" />
           </svg>
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-text">{t('app.banner.title')}</div>
-          <p className="mt-1 text-sm leading-relaxed text-text-soft">
+          <div className="font-display text-[13px] font-bold uppercase tracking-[0.1em] text-accent">
+            ▸ {t('app.banner.title')}
+          </div>
+          <p className="mt-1.5 text-sm leading-relaxed text-text-soft">
             {t('app.banner.body')}
           </p>
           <button
             onClick={onDismiss}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-soft hover:text-text"
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-line bg-panel-soft px-3 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.08em] text-text-soft hover:border-accent/60 hover:text-accent"
           >
             {t('app.banner.dismiss')}
           </button>
@@ -162,49 +255,43 @@ function ExplainerBanner({ onDismiss }: { onDismiss: () => void }) {
 }
 
 function Header({
-  onMenu,
   bannerDismissed,
   showBanner,
 }: {
-  onMenu: () => void;
   bannerDismissed: boolean;
   showBanner: () => void;
 }) {
   const { t } = useI18n();
   return (
-    <header className="sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60">
-      <div className="mx-auto flex max-w-[1400px] items-center gap-3 px-3 py-3 md:px-6">
-        <button
-          onClick={onMenu}
-          className="rounded-lg border border-line bg-panel-soft p-2 md:hidden"
-          aria-label="menu"
-        >
-          <span className="block h-0.5 w-5 bg-text" />
-          <span className="mt-1 block h-0.5 w-5 bg-text" />
-          <span className="mt-1 block h-0.5 w-5 bg-text" />
-        </button>
-        <div className="flex items-center gap-2">
-          <Logo />
-          <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-tight">
-              PUBGM Toolkit
-            </div>
-            <div className="text-[11px] text-text-dim">
-              Performance · v0.1 · Patch 3.x ref.
-            </div>
+    <header className="sticky top-0 z-20 border-b border-line/80 bg-bg/85 backdrop-blur supports-[backdrop-filter]:bg-bg/65">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-accent/70 to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 -bottom-1 h-px bg-gradient-to-r from-transparent via-accent/20 to-transparent blur-sm" />
+      <div className="flex items-center gap-2.5 px-3 py-2.5">
+        <Logo />
+        <div className="min-w-0 flex-1 leading-tight">
+          <div className="truncate font-display text-[14px] font-extrabold uppercase tracking-[0.12em] text-text">
+            PUBGM <span className="text-accent">Toolkit</span>
+          </div>
+          <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-text-dim">
+            <span className="pulse-ring inline-block h-1.5 w-1.5 rounded-full bg-good" />
+            <span className="text-good">ONLINE</span>
+            <span className="text-text-dim">·</span>
+            <span>v0.2 · 3.x</span>
           </div>
         </div>
-        <div className="ml-auto flex items-center gap-1.5">
-          {bannerDismissed && (
-            <button
-              onClick={showBanner}
-              className="hidden rounded-full border border-line bg-panel-soft px-3 py-1 text-xs text-text-soft hover:text-text sm:inline-flex"
-            >
-              {t('app.banner.show')}
-            </button>
-          )}
-          <LangSwitcher />
-        </div>
+        {bannerDismissed && (
+          <button
+            onClick={showBanner}
+            aria-label={t('app.banner.show')}
+            className="grid h-9 w-9 place-items-center rounded-md border border-line bg-panel-soft text-text-soft hover:border-accent/60 hover:text-accent"
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 8h.01M11 12h1v5h1" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+        <LangSwitcher />
       </div>
     </header>
   );
@@ -212,17 +299,28 @@ function Header({
 
 function Logo() {
   return (
-    <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-accent to-accent-2 text-bg">
+    <div className="relative grid h-11 w-11 shrink-0 place-items-center rounded-md border border-accent/60 bg-gradient-to-br from-bg to-panel-soft shadow-[0_0_18px_-2px_rgba(245,165,36,0.55),inset_0_0_0_1px_rgba(245,165,36,0.25)]">
+      {/* Spinning crosshair */}
       <svg
-        viewBox="0 0 24 24"
-        className="h-4 w-4"
+        viewBox="0 0 32 32"
+        className="crosshair-rot absolute inset-0 h-full w-full text-accent/35"
         fill="none"
         stroke="currentColor"
-        strokeWidth="2.5"
+        strokeWidth="1"
       >
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 2v4M12 18v4M2 12h4M18 12h4" strokeLinecap="round" />
-        <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+        <circle cx="16" cy="16" r="11" strokeDasharray="2 4" />
+      </svg>
+      {/* Static reticle */}
+      <svg
+        viewBox="0 0 32 32"
+        className="relative h-6 w-6 text-accent"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      >
+        <circle cx="16" cy="16" r="6" />
+        <path d="M16 2v6M16 24v6M2 16h6M24 16h6" strokeLinecap="round" />
+        <circle cx="16" cy="16" r="1.5" fill="currentColor" />
       </svg>
     </div>
   );
@@ -231,19 +329,23 @@ function Logo() {
 function LangSwitcher() {
   const { lang, setLang } = useI18n();
   return (
-    <div className="inline-flex overflow-hidden rounded-full border border-line bg-panel-soft p-0.5 text-xs">
+    <div className="inline-flex overflow-hidden rounded-md border border-line bg-panel-soft p-0.5 font-display text-[11px] font-bold uppercase tracking-[0.1em]">
       <button
         onClick={() => setLang('ru')}
-        className={`px-3 py-1 ${
-          lang === 'ru' ? 'bg-accent text-bg' : 'text-text-soft'
+        className={`px-3 py-1.5 transition ${
+          lang === 'ru'
+            ? 'bg-gradient-to-b from-accent to-[#d8881a] text-bg shadow-[inset_0_1px_0_rgba(255,255,255,0.3)]'
+            : 'text-text-soft hover:text-accent'
         }`}
       >
         RU
       </button>
       <button
         onClick={() => setLang('en')}
-        className={`px-3 py-1 ${
-          lang === 'en' ? 'bg-accent text-bg' : 'text-text-soft'
+        className={`px-3 py-1.5 transition ${
+          lang === 'en'
+            ? 'bg-gradient-to-b from-accent to-[#d8881a] text-bg shadow-[inset_0_1px_0_rgba(255,255,255,0.3)]'
+            : 'text-text-soft hover:text-accent'
         }`}
       >
         EN
@@ -252,49 +354,11 @@ function LangSwitcher() {
   );
 }
 
-function Nav({
-  tab,
-  setTab,
-  open,
-  setOpen,
-}: {
-  tab: ModuleId;
-  setTab: (t: ModuleId) => void;
-  open: boolean;
-  setOpen: (b: boolean) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <aside
-      className={`${
-        open ? 'block' : 'hidden'
-      } md:block w-full md:w-60 shrink-0`}
-    >
-      <nav className="md:sticky md:top-[68px] flex flex-wrap gap-1.5 rounded-2xl border border-line bg-panel p-2 md:flex-col md:gap-1">
-        {NAV.map((n) => (
-          <Pill
-            key={n.id}
-            active={tab === n.id}
-            onClick={() => {
-              setTab(n.id);
-              setOpen(false);
-            }}
-            className="md:justify-start md:w-full md:rounded-xl md:px-3 md:py-2 md:text-sm"
-          >
-            <span className="text-base leading-none">{n.icon}</span>
-            <span>{t(n.labelKey)}</span>
-          </Pill>
-        ))}
-      </nav>
-    </aside>
-  );
-}
-
 function ModuleSkeleton() {
   return (
     <div className="space-y-3">
-      <div className="h-24 animate-pulse rounded-2xl border border-line bg-panel" />
-      <div className="h-64 animate-pulse rounded-2xl border border-line bg-panel" />
+      <div className="h-24 animate-pulse rounded-xl border border-line bg-panel" />
+      <div className="h-64 animate-pulse rounded-xl border border-line bg-panel" />
     </div>
   );
 }

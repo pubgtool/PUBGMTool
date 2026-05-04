@@ -12,12 +12,20 @@ export function Card({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-line bg-panel p-4 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]">
+    <section className="hud-corners relative rounded-xl border border-line bg-panel/95 p-4 shadow-[0_2px_0_0_rgba(255,255,255,0.04)_inset,0_8px_30px_-12px_rgba(0,0,0,0.55)] backdrop-blur-sm">
+      {/* Top accent strip */}
+      <div className="pointer-events-none absolute inset-x-3 top-0 h-px bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
       {(title || right) && (
         <header className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            {title && <h2 className="text-base font-semibold text-text">{title}</h2>}
-            {subtitle && <p className="mt-1 text-sm text-text-soft">{subtitle}</p>}
+          <div className="bracket-l">
+            {title && (
+              <h2 className="font-display text-[15px] font-bold tracking-[0.06em] text-text">
+                {title}
+              </h2>
+            )}
+            {subtitle && (
+              <p className="mt-1 text-sm text-text-soft">{subtitle}</p>
+            )}
           </div>
           {right && <div className="shrink-0">{right}</div>}
         </header>
@@ -35,13 +43,15 @@ export function Button({
   variant?: 'default' | 'primary' | 'ghost' | 'danger';
 }) {
   const base =
-    'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none';
+    'btn-glow inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-display font-bold uppercase tracking-[0.08em] transition active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none';
   const map = {
-    default: 'bg-panel-soft text-text hover:bg-line border border-line',
+    default:
+      'bg-panel-soft text-text hover:bg-line border border-line hover:border-accent/60',
     primary:
-      'bg-accent text-bg hover:brightness-110 shadow-[0_6px_24px_-12px_rgba(245,165,36,0.6)]',
-    ghost: 'text-text-soft hover:text-text hover:bg-panel-soft',
-    danger: 'bg-bad text-white hover:brightness-110',
+      'bg-gradient-to-b from-accent to-[#d8881a] text-bg border border-accent shadow-[0_4px_18px_-6px_rgba(245,165,36,0.7),inset_0_1px_0_rgba(255,255,255,0.35)] hover:brightness-110',
+    ghost: 'text-text-soft hover:text-accent hover:bg-panel-soft',
+    danger:
+      'bg-gradient-to-b from-bad to-[#b91c1c] text-white border border-bad/70 shadow-[0_4px_18px_-6px_rgba(239,68,68,0.7)]',
   } as const;
   return <button className={`${base} ${map[variant]} ${className}`} {...rest} />;
 }
@@ -53,10 +63,10 @@ export function Pill({
   return (
     <button
       {...rest}
-      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition border ${
+      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-display font-semibold uppercase tracking-[0.06em] transition border ${
         active
-          ? 'bg-accent text-bg border-accent'
-          : 'bg-panel-soft text-text-soft border-line hover:text-text'
+          ? 'pill-pulse bg-gradient-to-b from-accent to-[#d8881a] text-bg border-accent'
+          : 'bg-panel-soft text-text-soft border-line hover:text-accent hover:border-accent/60'
       } ${rest.className ?? ''}`}
     />
   );
@@ -85,8 +95,8 @@ export function Slider({
     <div className={`flex flex-col gap-1 ${className}`}>
       {label !== undefined && (
         <div className="flex items-center justify-between text-xs">
-          <span className="text-text-soft">{label}</span>
-          <span className="font-mono text-text">
+          <span className="font-display uppercase tracking-[0.06em] text-text-soft">{label}</span>
+          <span className="font-mono text-[13px] font-semibold text-accent">
             {value}
             {unit ?? ''}
           </span>
@@ -111,7 +121,7 @@ export function Select({
   return (
     <select
       {...rest}
-      className={`w-full rounded-xl border border-line bg-panel-soft px-3 py-2 text-sm text-text focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-md border border-line bg-panel-soft px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 ${className}`}
     />
   );
 }
@@ -124,7 +134,7 @@ export function NumberInput({
     <input
       type="number"
       {...rest}
-      className={`w-full rounded-xl border border-line bg-panel-soft px-3 py-2 text-sm text-text focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-md border border-line bg-panel-soft px-3 py-2 font-mono text-sm text-accent focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 ${className}`}
     />
   );
 }
@@ -136,7 +146,7 @@ export function TextInput({
   return (
     <input
       {...rest}
-      className={`w-full rounded-xl border border-line bg-panel-soft px-3 py-2 text-sm text-text focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-md border border-line bg-panel-soft px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 ${className}`}
     />
   );
 }
@@ -162,10 +172,21 @@ export function Stat({
           : tone === 'accent'
             ? 'text-accent'
             : 'text-text';
+  const ringColor =
+    tone === 'good'
+      ? 'shadow-[0_0_20px_-4px_rgba(74,222,128,0.5)]'
+      : tone === 'bad'
+        ? 'shadow-[0_0_20px_-4px_rgba(239,68,68,0.5)]'
+        : tone === 'accent' || tone === 'default'
+          ? 'shadow-[0_0_20px_-4px_rgba(245,165,36,0.4)]'
+          : '';
   return (
-    <div className="rounded-xl border border-line bg-panel-soft p-3">
-      <div className="text-xs uppercase tracking-wider text-text-dim">{label}</div>
-      <div className={`mt-1 font-mono text-2xl ${color}`}>{value}</div>
+    <div
+      className={`relative overflow-hidden rounded-md border border-line bg-gradient-to-b from-panel-soft to-panel p-3 ${ringColor}`}
+    >
+      <div className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(245,165,36,0.8)]" />
+      <div className="font-display text-[10px] uppercase tracking-[0.18em] text-text-dim">{label}</div>
+      <div className={`mt-1 font-mono text-2xl font-bold ${color}`}>{value}</div>
       {hint && <div className="mt-1 text-xs text-text-soft">{hint}</div>}
     </div>
   );
@@ -184,16 +205,12 @@ export function Badge({
     warn: 'border-warn/50 text-warn bg-warn/10',
     bad: 'border-bad/50 text-bad bg-bad/10',
     accent: 'border-accent/50 text-accent bg-accent/10',
-  } as const;
+  };
   return (
     <span
-      className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${map[tone]}`}
+      className={`inline-flex items-center rounded-md border px-2 py-0.5 font-display text-[10px] font-semibold uppercase tracking-[0.1em] ${map[tone]}`}
     >
       {children}
     </span>
   );
-}
-
-export function Divider() {
-  return <div className="my-3 h-px bg-line" />;
 }
