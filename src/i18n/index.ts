@@ -10,6 +10,7 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'app.subtitle':
       'Sensitivity Builder · HUD Layout · Gyro · Recoil Lab · Headshot Trainer · TTK Calculator',
     'nav.sensitivity': 'Sensitivity Builder',
+    'nav.controls': 'Controls Setup',
     'nav.hud': 'HUD Layout',
     'nav.gyro': 'Gyro Calibration',
     'nav.recoil': 'Recoil Lab',
@@ -97,6 +98,125 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Средний сегмент (A54, Note 13, POCO X6, Pixel 8a): стабильные значения, которые не дёргаются от троттлинга.',
     'sensitivity.exportHint':
       'В PUBG Mobile нет official import API — переноси числа в Settings → Sensitivity вручную.',
+    'sensitivity.troubleshoot.title':
+      'Скопировал числа, но в игре гиро не работает или ADS не реагирует?',
+    'sensitivity.troubleshoot.body':
+      'Это не баг калькулятора — это режимы PUBG Mobile (Gyroscope: Always On vs Scope On, Fire button: tap vs drag, ADS: Hold vs Toggle). Открой Controls Setup — там пошаговая настройка контролов и диагностика по симптомам.',
+    'sensitivity.troubleshoot.cta': 'Открыть Controls Setup →',
+    'controls.title': 'Controls Setup',
+    'controls.lead':
+      'Sensitivity это половина задачи. Вторая — правильно настроить контролы, чтобы гироскоп работал во время ADS, а кнопка огня не «уезжала» под пальцем.',
+    'controls.intro':
+      'Если у тебя «не работает гиро при стрельбе», в 95% случаев проблема не в значениях из калькулятора, а в режимах: «Gyroscope: Scope On», режим «Drag Fire» у кнопки огня, либо ADS-режим в Toggle. Ниже — пошаговая настройка PUBG Mobile.',
+    'controls.tag.gyro': 'Gyroscope',
+    'controls.tag.gyro.desc':
+      'Должен быть «Always On» — иначе гиро не работает на close-range и в ADS на красном точке.',
+    'controls.tag.fire': 'Fire button',
+    'controls.tag.fire.desc':
+      'Режим Tap Fire (без drag). При Drag/Scroll кнопка двигается под пальцем и забирает ввод у гиро.',
+    'controls.tag.ads': 'ADS / Peek',
+    'controls.tag.ads.desc':
+      'Hold-режим стабильнее Toggle: палец сошёл — ADS отпустился, нет «залипшего» прицела.',
+    'controls.recommended.title': 'Рекомендованные настройки PUBG Mobile',
+    'controls.recommended.lead':
+      'Открой Settings внутри PUBG Mobile и пройдись по списку. Эти настройки чинят основные проблемы со стрельбой через гиро.',
+    'controls.recommended.tag': 'Рекомендую',
+    'controls.path.gyro_mode':
+      'Settings → Basic → Gyroscope',
+    'controls.option.always_on': 'Always On',
+    'controls.reason.always_on':
+      'Гиро работает всегда: и когда смотришь от бедра (TPP/FPP no-scope), и когда стреляешь с red dot, и когда в скоупе. Без этого «ADS-гиро» не существует — игра считает, что гиро надо включать только в скоупе.',
+    'controls.bad.scope_on':
+      '«Scope On» — самая частая причина «у меня гиро не поворачивает экран при стрельбе». В этом режиме гиро мёртв в close-range и при стрельбе с red dot.',
+    'controls.path.fire_button_mode':
+      'Settings → Controls → Customize → Fire button',
+    'controls.option.tap_fire': 'Tap Fire (без drag)',
+    'controls.reason.tap_fire':
+      'Кнопка огня неподвижна, нажатие не «съезжает». Гиро при этом не теряет фокус и спокойно крутит экран.',
+    'controls.bad.drag_fire':
+      'Drag-режим / прокрутка кнопки огня — палец перемещает кнопку, и игра воспринимает это как свайп камеры. Эффект: экран «дёргается» при стрельбе или гиро как будто не работает.',
+    'controls.path.peek_and_fire':
+      'Settings → Controls → Peek & Fire / Peek & Open Scope',
+    'controls.option.peek_and_fire': 'Peek & Fire = OFF (если играешь гиро)',
+    'controls.reason.peek_and_fire':
+      'Peek-кнопки автоматически выглядывают и стреляют — это конфликтует с гиро-наведением. Гироигрокам выключай. Если играешь чисто-thumb (без гиро) — можешь включить.',
+    'controls.path.ads_mode':
+      'Settings → Controls → Aim Down Sights mode',
+    'controls.option.ads_hold': 'Hold (удержание)',
+    'controls.reason.ads_hold':
+      'Палец отпустил — ADS снялся. В Toggle-режиме можно случайно остаться в ADS и ловить пули, не понимая что произошло.',
+    'controls.path.smart_aim_assist':
+      'Settings → Basic → Aim Assist',
+    'controls.option.aim_assist_on': 'On (для новичков и средних)',
+    'controls.reason.aim_assist_on':
+      'Маленький pull прицела к ближайшему телу. Не отключает скилл — просто не даёт промазать на close-range. Top-pro иногда отключают, но для большинства лучше On.',
+    'controls.path.scope_3d_touch':
+      'Settings → Controls → 3D Touch (iPhone)',
+    'controls.option.scope_3d_touch_off': 'Off',
+    'controls.reason.scope_3d_touch_off':
+      'iPhone давит сильнее — палец срабатывает как long-press и игра воспринимает это как другую команду. На iPhone 13/14/15 Pro выключай 3D Touch для огня и скоупа.',
+    'controls.troubleshoot.title': 'Если не работает — диагностика',
+    'controls.troubleshoot.lead':
+      'Выбери симптом — получишь список проверок. Каждый шаг → одна настройка PUBG Mobile.',
+    'controls.issue.gyro_off_in_ads.title':
+      'Гиро не поворачивает экран при стрельбе / ADS',
+    'controls.issue.gyro_off_in_ads.q1':
+      'Какой режим Gyroscope в Settings → Basic?',
+    'controls.issue.gyro_off_in_ads.f1':
+      'Поставь «Always On». «Scope On» работает только когда есть прицел в руках, и многие на красном точке думают, что играют с гиро, а игра считает иначе.',
+    'controls.issue.gyro_off_in_ads.q2':
+      'Все ли значения Gyroscope Sensitivity > 0 на каждом прицеле?',
+    'controls.issue.gyro_off_in_ads.f2':
+      'Открой Settings → Sensitivity → Gyroscope Sensitivity. Если на нужном прицеле стоит 0 — гиро отключён только для него. Подставь числа из колонки Gyro в нашем калькуляторе.',
+    'controls.issue.gyro_off_in_ads.q3':
+      'Включён ли Gyroscope в матче (иконка справа)?',
+    'controls.issue.gyro_off_in_ads.f3':
+      'В матче рядом с миникартой есть тоггл-иконка гиро. Если случайно нажал — гиро выключен на этот матч даже если в Settings = Always On. Включи обратно.',
+    'controls.issue.fire_button_drag.title':
+      'Кнопка огня «уезжает» / прокрутка кнопки',
+    'controls.issue.fire_button_drag.q1':
+      'В режиме Customize ты включил «Fire Button can be dragged» / прокрутку?',
+    'controls.issue.fire_button_drag.f1':
+      'Выключи. Открой Settings → Controls → Customize → выбери кнопку Fire → отключи «Move while holding» / drag-режим. Кнопка должна быть неподвижной.',
+    'controls.issue.fire_button_drag.q2':
+      'Используешь ли ты «Scoped Fire Button» (отдельная кнопка, появляющаяся в скоупе)?',
+    'controls.issue.fire_button_drag.f2':
+      'Если да — у неё своё положение и свой режим. Проверь её отдельно в Customize и убедись, что она тоже не drag-режим.',
+    'controls.issue.ads_doesnt_hold.title':
+      'ADS не «держится» / отщёлкивается случайно',
+    'controls.issue.ads_doesnt_hold.q1':
+      'В Settings → Controls → ADS Mode что стоит?',
+    'controls.issue.ads_doesnt_hold.f1':
+      'Поставь «Hold» (удерживание). В Toggle-режиме случайный второй тап снимает ADS. Hold предсказуемый: палец на кнопке = ADS, отпустил = снят.',
+    'controls.issue.screen_jumps_on_shoot.title':
+      'Экран дёргается при стрельбе',
+    'controls.issue.screen_jumps_on_shoot.q1':
+      'Включён ли Camera Sensitivity на максимуме где-то?',
+    'controls.issue.screen_jumps_on_shoot.f1':
+      'Открой Sensitivity Builder и проверь Camera (Free Look). Если TPP No Scope = 300 и кнопка огня в drag-режиме — палец двигает камеру при стрельбе. Сбрось до пресета iPhone 13/14/15 Pro · 120Hz.',
+    'controls.issue.screen_jumps_on_shoot.q2':
+      'Делал ли ты Gyro Calibration в нашем модуле?',
+    'controls.issue.screen_jumps_on_shoot.f2':
+      'Нет — открой Gyro Calibration. Если гироскоп смещён (физический drift телефона), экран будет уезжать сам. Калибровка фиксит это в течение 10 секунд.',
+    'controls.gyroAds.title': 'Гиро + ADS: правила, которые работают',
+    'controls.gyroAds.body1':
+      'PUBG Mobile использует одну колонку «Gyroscope Sensitivity» для всего: и для свободного обзора (если Always On), и для ADS. Отдельной «ADS Gyro» в игре нет. Поэтому когда говорят «настрой ADS-гиро» — имеется в виду те же значения Gyroscope Sensitivity на прицелах от Red Dot до 8x.',
+    'controls.gyroAds.body2':
+      'Большинство pro-игроков ставят высокие значения (300) на close-mid и уменьшают на 6x/8x — чтобы крупные прицелы не дёргало мелкими движениями телефона. Наш пресет «iPhone 13/14/15 Pro · 120Hz» уже так и сделан.',
+    'controls.gyroAds.do': 'Делай',
+    'controls.gyroAds.do.1':
+      'Gyroscope = Always On. Без вариантов.',
+    'controls.gyroAds.do.2':
+      'Камеру руками наводи грубо, гироскопом точно. Палец крутит на 10°, гиро добавляет ±2°.',
+    'controls.gyroAds.do.3':
+      'Тренируй на стрельбище 10 минут перед матчем — гиро это мышечная память.',
+    'controls.gyroAds.dont': 'Не надо',
+    'controls.gyroAds.dont.1':
+      'Не ставь Gyroscope = Scope On и не жалуйся, что «гиро не работает в ADS на ред дот».',
+    'controls.gyroAds.dont.2':
+      'Не включай Drag Fire вместе с гиро. Это две разные системы свайпа, они конфликтуют.',
+    'controls.gyroAds.dont.3':
+      'Не меняй значения на ±50 за день. Подкручивай ±5 и тренируй неделю — иначе мышечная память сбросится.',
     'hud.title': 'HUD Layout Generator',
     'hud.lead':
       'Тащи кнопки куда удобно. Координаты нормализованы — раскладка одинаково ляжет на любое разрешение экрана.',
@@ -265,6 +385,7 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'app.subtitle':
       'Sensitivity Builder · HUD Layout · Gyro · Recoil Lab · Headshot Trainer · TTK Calculator',
     'nav.sensitivity': 'Sensitivity Builder',
+    'nav.controls': 'Controls Setup',
     'nav.hud': 'HUD Layout',
     'nav.gyro': 'Gyro Calibration',
     'nav.recoil': 'Recoil Lab',
@@ -352,6 +473,125 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Mid-range (A54, Note 13, POCO X6, Pixel 8a): stable values that don\u2019t whip around when the SoC throttles.',
     'sensitivity.exportHint':
       'PUBG Mobile has no official import API — copy the numbers manually under Settings → Sensitivity.',
+    'sensitivity.troubleshoot.title':
+      'Copied the numbers but gyro still off / ADS unresponsive in-game?',
+    'sensitivity.troubleshoot.body':
+      'This isn\u2019t a calculator bug — it\u2019s a PUBG Mobile control-mode issue (Gyroscope: Always On vs Scope On, Fire button: tap vs drag, ADS: Hold vs Toggle). Open Controls Setup for a step-by-step setup and symptom-based diagnosis.',
+    'sensitivity.troubleshoot.cta': 'Open Controls Setup →',
+    'controls.title': 'Controls Setup',
+    'controls.lead':
+      'Sensitivity is only half the job. The other half is configuring the controls so the gyro actually fires during ADS and the fire button doesn\u2019t drift under your finger.',
+    'controls.intro':
+      'When players say "gyro doesn\u2019t work while shooting", 95% of the time it isn\u2019t the values from the calculator — it\u2019s the modes: Gyroscope set to "Scope On", a drag-fire button, or ADS mode on Toggle. Below is the step-by-step PUBG Mobile setup.',
+    'controls.tag.gyro': 'Gyroscope',
+    'controls.tag.gyro.desc':
+      'Must be "Always On" — otherwise gyro stays off in close range and on red dot ADS.',
+    'controls.tag.fire': 'Fire button',
+    'controls.tag.fire.desc':
+      'Tap Fire (no drag). With drag/scroll, the button moves under your finger and steals input from the gyro.',
+    'controls.tag.ads': 'ADS / Peek',
+    'controls.tag.ads.desc':
+      'Hold beats Toggle: finger off → ADS off, no stuck-scope situations.',
+    'controls.recommended.title': 'Recommended PUBG Mobile settings',
+    'controls.recommended.lead':
+      'Open Settings inside PUBG Mobile and walk through this list. These fix the main shoot-through-gyro issues.',
+    'controls.recommended.tag': 'Recommended',
+    'controls.path.gyro_mode':
+      'Settings → Basic → Gyroscope',
+    'controls.option.always_on': 'Always On',
+    'controls.reason.always_on':
+      'Gyro stays active everywhere: hip-fire (TPP/FPP no scope), red dot ADS, and full scopes. Without this there is no "ADS gyro" — the game only enables gyro inside scopes.',
+    'controls.bad.scope_on':
+      '"Scope On" is the #1 reason behind "my gyro doesn\u2019t turn the screen while shooting". With this setting gyro is dead in close range and during red-dot fire fights.',
+    'controls.path.fire_button_mode':
+      'Settings → Controls → Customize → Fire button',
+    'controls.option.tap_fire': 'Tap Fire (no drag)',
+    'controls.reason.tap_fire':
+      'The fire button is fixed in place, so taps don\u2019t drift. Gyro keeps focus and steers the camera cleanly.',
+    'controls.bad.drag_fire':
+      'Drag mode / scroll-to-fire — your finger moves the button and the game reads it as a camera swipe. Result: the view jerks while shooting, or gyro feels disabled.',
+    'controls.path.peek_and_fire':
+      'Settings → Controls → Peek & Fire / Peek & Open Scope',
+    'controls.option.peek_and_fire': 'Peek & Fire = OFF (if you use gyro)',
+    'controls.reason.peek_and_fire':
+      'Peek buttons auto-lean and auto-fire, which fights gyro aiming. Turn off if you play gyro. Pure-thumb players can leave it on.',
+    'controls.path.ads_mode':
+      'Settings → Controls → Aim Down Sights mode',
+    'controls.option.ads_hold': 'Hold',
+    'controls.reason.ads_hold':
+      'Finger off → ADS released. Toggle mode can leave you stuck in ADS while you eat bullets.',
+    'controls.path.smart_aim_assist':
+      'Settings → Basic → Aim Assist',
+    'controls.option.aim_assist_on': 'On (newbie / intermediate)',
+    'controls.reason.aim_assist_on':
+      'Tiny pull toward the closest body. Doesn\u2019t replace skill — it just stops you whiffing in close range. Some top pros switch it off, but for most players, On is better.',
+    'controls.path.scope_3d_touch':
+      'Settings → Controls → 3D Touch (iPhone)',
+    'controls.option.scope_3d_touch_off': 'Off',
+    'controls.reason.scope_3d_touch_off':
+      'iPhones register hard presses as long-holds, which the game treats as a different command. On iPhone 13/14/15 Pro, disable 3D Touch on fire and scope buttons.',
+    'controls.troubleshoot.title': 'Not working — diagnostics',
+    'controls.troubleshoot.lead':
+      'Pick the symptom you\u2019re hitting. Each step maps to one PUBG Mobile setting.',
+    'controls.issue.gyro_off_in_ads.title':
+      'Gyro doesn\u2019t turn the screen while firing / ADS',
+    'controls.issue.gyro_off_in_ads.q1':
+      'What\u2019s the Gyroscope mode in Settings → Basic?',
+    'controls.issue.gyro_off_in_ads.f1':
+      'Set it to "Always On". "Scope On" only works while a scope is up, and many red-dot players think gyro is on while the game disagrees.',
+    'controls.issue.gyro_off_in_ads.q2':
+      'Are all Gyroscope Sensitivity values > 0 across every scope?',
+    'controls.issue.gyro_off_in_ads.f2':
+      'Open Settings → Sensitivity → Gyroscope Sensitivity. If a scope shows 0, gyro is disabled just for that scope. Copy the values from the Gyro column in this calculator.',
+    'controls.issue.gyro_off_in_ads.q3':
+      'Is the gyro toggle on inside the match (icon near the minimap)?',
+    'controls.issue.gyro_off_in_ads.f3':
+      'There\u2019s an in-match gyro toggle next to the minimap. If you tapped it accidentally, gyro is off for that match even if Settings = Always On. Toggle it back on.',
+    'controls.issue.fire_button_drag.title':
+      'Fire button drifts / scrolls',
+    'controls.issue.fire_button_drag.q1':
+      'Did you enable "Fire Button can be dragged" / scroll mode in Customize?',
+    'controls.issue.fire_button_drag.f1':
+      'Disable it. Settings → Controls → Customize → select Fire → turn off "Move while holding" / drag mode. The button must stay still.',
+    'controls.issue.fire_button_drag.q2':
+      'Are you using the "Scoped Fire Button" (separate button that appears in scopes)?',
+    'controls.issue.fire_button_drag.f2':
+      'It has its own position and mode. Check it separately in Customize and make sure it\u2019s not in drag mode either.',
+    'controls.issue.ads_doesnt_hold.title':
+      'ADS doesn\u2019t hold / releases unexpectedly',
+    'controls.issue.ads_doesnt_hold.q1':
+      'What\u2019s set under Settings → Controls → ADS Mode?',
+    'controls.issue.ads_doesnt_hold.f1':
+      'Set "Hold". With Toggle, an accidental second tap drops ADS. Hold is predictable: finger on → ADS, finger off → released.',
+    'controls.issue.screen_jumps_on_shoot.title':
+      'Screen jerks while shooting',
+    'controls.issue.screen_jumps_on_shoot.q1':
+      'Is some Camera Sensitivity slammed to max?',
+    'controls.issue.screen_jumps_on_shoot.f1':
+      'Open Sensitivity Builder and check Camera (Free Look). If TPP No Scope = 300 with a drag-fire button, the finger drags the camera while shooting. Reset to the iPhone 13/14/15 Pro · 120Hz preset.',
+    'controls.issue.screen_jumps_on_shoot.q2':
+      'Have you run Gyro Calibration in our module?',
+    'controls.issue.screen_jumps_on_shoot.f2':
+      'Open Gyro Calibration. If the gyro has physical drift, the screen will move on its own. Calibration fixes it in 10 seconds.',
+    'controls.gyroAds.title': 'Gyro + ADS: rules that actually work',
+    'controls.gyroAds.body1':
+      'PUBG Mobile uses a single "Gyroscope Sensitivity" column for everything: free look (when Always On) and ADS. There\u2019s no separate "ADS Gyro" panel. So when people say "tune ADS gyro", they mean the same Gyroscope Sensitivity values across Red Dot through 8x.',
+    'controls.gyroAds.body2':
+      'Most pros use high values (300) on close/mid and lower on 6x/8x — so heavy scopes don\u2019t shake from tiny phone movements. Our "iPhone 13/14/15 Pro · 120Hz" preset already follows that pattern.',
+    'controls.gyroAds.do': 'Do',
+    'controls.gyroAds.do.1':
+      'Gyroscope = Always On. No exceptions.',
+    'controls.gyroAds.do.2':
+      'Aim coarsely with the thumb, fine with gyro. Thumb swings 10°, gyro adjusts ±2°.',
+    'controls.gyroAds.do.3':
+      'Warm up on the training ground for 10 minutes pre-match — gyro is muscle memory.',
+    'controls.gyroAds.dont': 'Don\u2019t',
+    'controls.gyroAds.dont.1':
+      'Don\u2019t set Gyroscope = Scope On and then complain "gyro doesn\u2019t work in red-dot ADS".',
+    'controls.gyroAds.dont.2':
+      'Don\u2019t enable Drag Fire alongside gyro. Two different swipe systems competing for the same input.',
+    'controls.gyroAds.dont.3':
+      'Don\u2019t move values by ±50 in a day. Tweak ±5 and train for a week — otherwise muscle memory resets.',
     'hud.title': 'HUD Layout Generator',
     'hud.lead':
       'Drag buttons where they feel right. Coordinates are normalized so the layout scales across screen sizes.',

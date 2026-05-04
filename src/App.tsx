@@ -16,9 +16,11 @@ const CrosshairTrainer = lazy(() => import('./modules/CrosshairTrainer'));
 const DeviceProfile = lazy(() => import('./modules/DeviceProfile'));
 const DropSpots = lazy(() => import('./modules/DropSpots'));
 const TipsCoach = lazy(() => import('./modules/TipsCoach'));
+const ControlsSetup = lazy(() => import('./modules/ControlsSetup'));
 
 type ModuleId =
   | 'sensitivity'
+  | 'controls'
   | 'hud'
   | 'gyro'
   | 'recoil'
@@ -40,6 +42,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: 'sensitivity', labelKey: 'nav.sensitivity', icon: '◎' },
+  { id: 'controls', labelKey: 'nav.controls', icon: '⚙' },
   { id: 'hud', labelKey: 'nav.hud', icon: '⊞' },
   { id: 'gyro', labelKey: 'nav.gyro', icon: '⟲' },
   { id: 'recoil', labelKey: 'nav.recoil', icon: '↑' },
@@ -297,6 +300,8 @@ function renderModule(id: ModuleId) {
   switch (id) {
     case 'sensitivity':
       return <SensitivityBuilder />;
+    case 'controls':
+      return <ControlsSetup />;
     case 'hud':
       return <HudLayoutGenerator />;
     case 'gyro':

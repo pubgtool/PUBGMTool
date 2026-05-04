@@ -166,6 +166,23 @@ export default function SensitivityBuilder() {
         </Card>
       ))}
 
+      <Card title={t('sensitivity.troubleshoot.title')}>
+        <p className="text-sm leading-relaxed text-text-soft">
+          {t('sensitivity.troubleshoot.body')}
+        </p>
+        <Button
+          variant="primary"
+          className="mt-3"
+          onClick={() => {
+            window.dispatchEvent(
+              new CustomEvent('pubgm:nav', { detail: { tab: 'controls' } }),
+            );
+          }}
+        >
+          {t('sensitivity.troubleshoot.cta')}
+        </Button>
+      </Card>
+
       <Card title={t('sensitivity.applyTitle')}>
         <ol className="space-y-2 text-sm leading-relaxed text-text-soft">
           <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
