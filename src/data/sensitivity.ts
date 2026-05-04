@@ -24,10 +24,10 @@ export const SCOPES: { key: ScopeKey; label: string }[] = [
 
 export type Channel = 'camera' | 'ads' | 'gyro';
 
-export const CHANNELS: { key: Channel; label: string; description: string }[] = [
-  { key: 'camera', label: 'Camera (Free Look)', description: 'How fast the camera turns when you swipe with no scope open.' },
-  { key: 'ads', label: 'ADS (Aim Down Sights)', description: 'How fast you turn while holding any scope.' },
-  { key: 'gyro', label: 'Gyroscope', description: 'How much the camera moves when you tilt your phone (only if gyro is on).' },
+export const CHANNELS: { key: Channel; descriptionKey: string }[] = [
+  { key: 'camera', descriptionKey: 'sensitivity.channel.camera.desc' },
+  { key: 'ads', descriptionKey: 'sensitivity.channel.ads.desc' },
+  { key: 'gyro', descriptionKey: 'sensitivity.channel.gyro.desc' },
 ];
 
 export type Sensitivity = Record<Channel, Record<ScopeKey, number>>;
@@ -35,8 +35,8 @@ export type Sensitivity = Record<Channel, Record<ScopeKey, number>>;
 export interface SensitivityPreset {
   id: string;
   name: string;
-  /** RU description for context. */
-  description: string;
+  /** Translation key for the description shown in UI. */
+  descriptionKey: string;
   values: Sensitivity;
   /** Recommended for these play styles. */
   tags: ('thumb' | 'claw' | 'fourFinger' | 'sixFinger' | 'gyro' | 'noGyro')[];
@@ -57,8 +57,7 @@ export const SENSITIVITY_PRESETS: SensitivityPreset[] = [
   {
     id: 'no_gyro_balanced',
     name: 'No Gyro · Balanced',
-    description:
-      'Сбалансированный пресет для игры без гироскопа: уверенный close-range и читаемый long-range.',
+    descriptionKey: 'sensitivity.preset.no_gyro_balanced.desc',
     tags: ['noGyro', 'thumb', 'claw'],
     values: {
       camera: { ...z, tppNoScope: 110, fppNoScope: 95, redDot: 60, x2: 45, x3: 30, x4: 26, x6: 18, x8: 14 },
@@ -69,8 +68,7 @@ export const SENSITIVITY_PRESETS: SensitivityPreset[] = [
   {
     id: 'full_gyro_aggressive',
     name: 'Full Gyro · Aggressive',
-    description:
-      'Полный гироскоп, минимум ADS — стрельба контролируется наклонами телефона.',
+    descriptionKey: 'sensitivity.preset.full_gyro_aggressive.desc',
     tags: ['gyro', 'fourFinger', 'sixFinger', 'claw'],
     values: {
       camera: { ...z, tppNoScope: 200, fppNoScope: 160, redDot: 30, x2: 25, x3: 18, x4: 14, x6: 10, x8: 8 },
@@ -81,8 +79,7 @@ export const SENSITIVITY_PRESETS: SensitivityPreset[] = [
   {
     id: 'full_gyro_long',
     name: 'Full Gyro · Long Range',
-    description:
-      'Гироскоп оптимизирован под 4x/6x/8x — стабильный «потяг» отдачи на дистанции.',
+    descriptionKey: 'sensitivity.preset.full_gyro_long.desc',
     tags: ['gyro', 'fourFinger', 'sixFinger', 'claw'],
     values: {
       camera: { ...z, tppNoScope: 180, fppNoScope: 150, redDot: 35, x2: 25, x3: 20, x4: 14, x6: 10, x8: 8 },
@@ -93,8 +90,7 @@ export const SENSITIVITY_PRESETS: SensitivityPreset[] = [
   {
     id: 'thumb_close',
     name: 'Thumb · Close Range',
-    description:
-      'Игра двумя большими пальцами, упор на close/mid bo за счёт ADS.',
+    descriptionKey: 'sensitivity.preset.thumb_close.desc',
     tags: ['thumb', 'noGyro'],
     values: {
       camera: { ...z, tppNoScope: 120, fppNoScope: 105, redDot: 70, x2: 55, x3: 40, x4: 30, x6: 22, x8: 16 },
@@ -105,8 +101,7 @@ export const SENSITIVITY_PRESETS: SensitivityPreset[] = [
   {
     id: 'mixed_hybrid',
     name: 'Hybrid · Gyro + ADS',
-    description:
-      'Гиро для long range, ADS для close range — компромисс между двумя школами.',
+    descriptionKey: 'sensitivity.preset.mixed_hybrid.desc',
     tags: ['gyro', 'thumb', 'claw'],
     values: {
       camera: { ...z, tppNoScope: 150, fppNoScope: 130, redDot: 50, x2: 40, x3: 28, x4: 22, x6: 16, x8: 12 },

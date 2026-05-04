@@ -77,7 +77,7 @@ export default function DeviceProfile() {
 
       {preset && (
         <Card title={`${t('common.preset')}: ${preset.name}`}>
-          <p className="text-sm text-text-soft">{preset.description}</p>
+          <p className="text-sm text-text-soft">{t(preset.descriptionKey)}</p>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {preset.tags.map((tg) => (
               <Badge key={tg} tone="default">

@@ -82,10 +82,23 @@ function Shell({
   setTab: (t: ModuleId) => void;
 }) {
   const [navOpen, setNavOpen] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useLocalStorage<boolean>(
+    'pubgm.banner.dismissed',
+    false,
+  );
 
   return (
     <div className="min-h-full">
-      <Header onMenu={() => setNavOpen((o) => !o)} />
+      <Header
+        onMenu={() => setNavOpen((o) => !o)}
+        bannerDismissed={bannerDismissed}
+        showBanner={() => setBannerDismissed(false)}
+      />
+      <div className="mx-auto max-w-[1400px] px-3 pt-3 md:px-6">
+        {!bannerDismissed && (
+          <ExplainerBanner onDismiss={() => setBannerDismissed(true)} />
+        )}
+      </div>
       <div className="mx-auto flex max-w-[1400px] gap-0 px-3 pb-12 pt-3 md:gap-6 md:px-6">
         <Nav tab={tab} setTab={setTab} open={navOpen} setOpen={setNavOpen} />
         <main className="min-w-0 flex-1">
@@ -96,7 +109,44 @@ function Shell({
   );
 }
 
-function Header({ onMenu }: { onMenu: () => void }) {
+function ExplainerBanner({ onDismiss }: { onDismiss: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="mb-3 rounded-2xl border border-accent/40 bg-gradient-to-br from-accent/10 to-accent-2/10 p-4 md:p-5">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/20 text-accent">
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 8h.01M11 12h1v5h1" strokeLinecap="round" />
+          </svg>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-text">{t('app.banner.title')}</div>
+          <p className="mt-1 text-sm leading-relaxed text-text-soft">
+            {t('app.banner.body')}
+          </p>
+          <button
+            onClick={onDismiss}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-soft hover:text-text"
+          >
+            {t('app.banner.dismiss')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Header({
+  onMenu,
+  bannerDismissed,
+  showBanner,
+}: {
+  onMenu: () => void;
+  bannerDismissed: boolean;
+  showBanner: () => void;
+}) {
+  const { t } = useI18n();
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60">
       <div className="mx-auto flex max-w-[1400px] items-center gap-3 px-3 py-3 md:px-6">
@@ -121,6 +171,14 @@ function Header({ onMenu }: { onMenu: () => void }) {
           </div>
         </div>
         <div className="ml-auto flex items-center gap-1.5">
+          {bannerDismissed && (
+            <button
+              onClick={showBanner}
+              className="hidden rounded-full border border-line bg-panel-soft px-3 py-1 text-xs text-text-soft hover:text-text sm:inline-flex"
+            >
+              {t('app.banner.show')}
+            </button>
+          )}
           <LangSwitcher />
         </div>
       </div>

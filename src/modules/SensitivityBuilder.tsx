@@ -117,7 +117,10 @@ export default function SensitivityBuilder() {
         </div>
         {activePreset !== 'custom' && (
           <p className="mt-3 text-sm text-text-soft">
-            {SENSITIVITY_PRESETS.find((p) => p.id === activePreset)?.description}
+            {(() => {
+              const p = SENSITIVITY_PRESETS.find((p) => p.id === activePreset);
+              return p ? t(p.descriptionKey) : '';
+            })()}
           </p>
         )}
       </Card>
@@ -132,7 +135,7 @@ export default function SensitivityBuilder() {
         <Card
           key={ch.key}
           title={t(`sensitivity.channel.${ch.key}`)}
-          subtitle={ch.description}
+          subtitle={t(ch.descriptionKey)}
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {SCOPES.map((s) => (
@@ -162,6 +165,29 @@ export default function SensitivityBuilder() {
           </div>
         </Card>
       ))}
+
+      <Card title={t('sensitivity.applyTitle')}>
+        <ol className="space-y-2 text-sm leading-relaxed text-text-soft">
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('sensitivity.apply.step1')}
+          </li>
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('sensitivity.apply.step2')}
+          </li>
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('sensitivity.apply.step3')}
+          </li>
+          <li className="rounded-xl border border-accent/30 bg-accent/5 px-3 py-2 text-text">
+            {t('sensitivity.apply.step4')}
+          </li>
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('sensitivity.apply.step5')}
+          </li>
+        </ol>
+        <p className="mt-3 rounded-xl border border-warn/30 bg-warn/5 px-3 py-2 text-xs leading-relaxed text-warn">
+          {t('sensitivity.apply.note')}
+        </p>
+      </Card>
 
       <Card title={t('common.export') + ' / ' + t('common.share')}>
         <p className="mb-3 text-sm text-text-soft">{t('sensitivity.exportHint')}</p>

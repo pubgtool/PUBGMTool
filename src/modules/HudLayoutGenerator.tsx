@@ -96,7 +96,7 @@ export default function HudLayoutGenerator() {
             </Pill>
           ))}
         </div>
-        <p className="mt-3 text-sm text-text-soft">{layout.description}</p>
+        <p className="mt-3 text-sm text-text-soft">{t(layout.descriptionKey)}</p>
       </Card>
 
       <Card title="Preview" subtitle={t('hud.previewHint')}>
@@ -165,6 +165,23 @@ export default function HudLayoutGenerator() {
           value={`${(layout.buttons.length / 10).toFixed(1)}/10`}
         />
       </div>
+
+      <Card title={t('hud.applyTitle')}>
+        <ol className="space-y-2 text-sm leading-relaxed text-text-soft">
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('hud.apply.step1')}
+          </li>
+          <li className="rounded-xl border border-accent/30 bg-accent/5 px-3 py-2 text-text">
+            {t('hud.apply.step2')}
+          </li>
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('hud.apply.step3')}
+          </li>
+          <li className="rounded-xl border border-line bg-panel-soft px-3 py-2">
+            {t('hud.apply.step4')}
+          </li>
+        </ol>
+      </Card>
 
       <Card title={t('common.export') + ' / ' + t('common.share')}>
         <div className="flex flex-wrap items-center gap-2">

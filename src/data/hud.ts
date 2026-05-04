@@ -34,7 +34,8 @@ export interface HudButton {
 export interface HudLayout {
   id: string;
   name: string;
-  description: string;
+  /** i18n key for the layout description. */
+  descriptionKey: string;
   /** Recommended hand-style. */
   style: 'thumb' | 'claw' | 'fourFinger' | 'sixFinger';
   buttons: HudButton[];
@@ -46,7 +47,7 @@ export const HUD_LAYOUTS: HudLayout[] = [
   {
     id: 'thumb_default',
     name: 'Thumbs · Default',
-    description: 'Стандартная двух-пальцевая раскладка для большинства игроков.',
+    descriptionKey: 'hud.layout.thumb_default.desc',
     style: 'thumb',
     buttons: [
       c('fire1', 0.86, 0.62, 0.18, 'FIRE', '#ef4444'),
@@ -69,7 +70,7 @@ export const HUD_LAYOUTS: HudLayout[] = [
   {
     id: 'claw_three',
     name: 'Claw · 3-Finger',
-    description: 'Когтевой хват тремя пальцами: спусковой палец на FIRE сверху.',
+    descriptionKey: 'hud.layout.claw_three.desc',
     style: 'claw',
     buttons: [
       c('fire1', 0.92, 0.10, 0.10, 'FIRE', '#ef4444'),
@@ -92,7 +93,7 @@ export const HUD_LAYOUTS: HudLayout[] = [
   {
     id: 'four_finger',
     name: '4-Finger Claw',
-    description: 'Четыре пальца: левая/правая ADS снизу, FIRE и SCOPE сверху.',
+    descriptionKey: 'hud.layout.four_finger.desc',
     style: 'fourFinger',
     buttons: [
       c('fire1', 0.92, 0.10, 0.10, 'FIRE R', '#ef4444'),
@@ -115,8 +116,7 @@ export const HUD_LAYOUTS: HudLayout[] = [
   {
     id: 'six_finger_pro',
     name: '6-Finger Pro',
-    description:
-      'Расширенная 6-пальцевая раскладка: отдельные кнопки для лева/права, прыжка и крауча сверху.',
+    descriptionKey: 'hud.layout.six_finger_pro.desc',
     style: 'sixFinger',
     buttons: [
       c('fire1', 0.92, 0.10, 0.10, 'FIRE R', '#ef4444'),
