@@ -58,6 +58,7 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'common.category': 'Класс',
     'common.search': 'Поиск',
     'common.compare': 'Сравнить',
+    'common.scope': 'Прицел',
     'common.warning.dataDisclaimer':
       'Числа взяты из публичных источников и приближены к мете патча 3.x. Используй как стартовую точку, а не как абсолютную истину — каждый патч баланс меняется.',
     'sensitivity.title': 'Sensitivity Builder',
@@ -82,6 +83,18 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Игра двумя большими пальцами, упор на close/mid bot за счёт высокой ADS.',
     'sensitivity.preset.mixed_hybrid.desc':
       'Гиро для long range, ADS для close range — компромисс между двумя школами.',
+    'sensitivity.preset.iphone_pro_120.desc':
+      'Заточен под iPhone 13/14/15 Pro: 120 Гц ProMotion + стабильное iOS-гиро. ADS заполнен — годится и без гироскопа, в hybrid-стиле.',
+    'sensitivity.preset.iphone_60_stable.desc':
+      'iPhone 13/14/15 (60 Гц): чуть мягче, упор на ADS. Не перегружает гиро на 60 Гц-экране.',
+    'sensitivity.preset.samsung_ultra_claw.desc':
+      'Galaxy S Ultra на 120 Гц AMOLED + Snapdragon: claw 4-finger, гиро + ADS-fallback на close range.',
+    'sensitivity.preset.oneplus_xiaomi_pro.desc':
+      'Топовые OnePlus / Xiaomi с 120 Гц: агрессивный full-gyro для 4/6-finger. ADS отключён на близкой дистанции.',
+    'sensitivity.preset.rog_redmagic_tournament.desc':
+      'ROG Phone / RedMagic, 144 Гц: киберспорт-уровень 6-finger. Гиро на максимуме на всех прицелах, ADS для backup.',
+    'sensitivity.preset.mid_range_stable.desc':
+      'Средний сегмент (A54, Note 13, POCO X6, Pixel 8a): стабильные значения, которые не дёргаются от троттлинга.',
     'sensitivity.exportHint':
       'В PUBG Mobile нет official import API — переноси числа в Settings → Sensitivity вручную.',
     'hud.title': 'HUD Layout Generator',
@@ -186,6 +199,10 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'device.graphics': 'Графика',
     'device.fps': 'FPS',
     'device.styleAdvice': 'Совет по стилю',
+    'device.applyToBuilder': 'Применить пресет в Sensitivity Builder',
+    'device.applied': 'Готово — открой вкладку Sensitivity',
+    'device.applyNote':
+      'Эти числа уже подставлены в Sensitivity Builder. Перейди туда, чтобы скопировать их в PUBG Mobile, или допиши свои.',
     'maps.title': 'Drop Spots',
     'maps.lead':
       'Карта дроп-спотов с тиром лута и риском. Используй как чек-лист для смены ротации.',
@@ -296,6 +313,7 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'common.category': 'Class',
     'common.search': 'Search',
     'common.compare': 'Compare',
+    'common.scope': 'Scope',
     'common.warning.dataDisclaimer':
       'Numbers are aggregated from public sources and approximate the patch 3.x meta. Use them as a starting point — every patch shifts the balance.',
     'sensitivity.title': 'Sensitivity Builder',
@@ -320,6 +338,18 @@ export const DICTIONARIES: Record<Lang, Dict> = {
       'Two-thumb playstyle, leaning on ADS for close/mid range fights.',
     'sensitivity.preset.mixed_hybrid.desc':
       'Gyro for long range, ADS for close range — a compromise between both schools.',
+    'sensitivity.preset.iphone_pro_120.desc':
+      'Tuned for iPhone 13/14/15 Pro: 120Hz ProMotion + steady iOS gyro. ADS is filled in — works in hybrid style without gyro too.',
+    'sensitivity.preset.iphone_60_stable.desc':
+      'iPhone 13/14/15 (60Hz): softer pacing, ADS-leaning. Avoids overdriving gyro on a 60Hz panel.',
+    'sensitivity.preset.samsung_ultra_claw.desc':
+      'Galaxy S Ultra on 120Hz AMOLED + Snapdragon: claw 4-finger with gyro and an ADS fallback for close range.',
+    'sensitivity.preset.oneplus_xiaomi_pro.desc':
+      'Top-tier OnePlus / Xiaomi at 120Hz: aggressive full-gyro for 4/6-finger. ADS muted on close range.',
+    'sensitivity.preset.rog_redmagic_tournament.desc':
+      'ROG Phone / RedMagic, 144Hz: tournament-grade 6-finger. Gyro maxed across every scope, ADS as backup.',
+    'sensitivity.preset.mid_range_stable.desc':
+      'Mid-range (A54, Note 13, POCO X6, Pixel 8a): stable values that don\u2019t whip around when the SoC throttles.',
     'sensitivity.exportHint':
       'PUBG Mobile has no official import API — copy the numbers manually under Settings → Sensitivity.',
     'hud.title': 'HUD Layout Generator',
@@ -424,6 +454,10 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'device.graphics': 'Graphics',
     'device.fps': 'FPS',
     'device.styleAdvice': 'Style advice',
+    'device.applyToBuilder': 'Apply preset to Sensitivity Builder',
+    'device.applied': 'Done — open the Sensitivity tab',
+    'device.applyNote':
+      'These numbers are now loaded into Sensitivity Builder. Open that tab to copy them into PUBG Mobile, or fine-tune from there.',
     'maps.title': 'Drop Spots',
     'maps.lead':
       'Curated drop spots with loot tier and risk metadata. Use it as a checklist when changing your rotation.',

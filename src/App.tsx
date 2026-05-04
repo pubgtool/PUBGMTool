@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { I18nContext, DICTIONARIES, type Lang, useI18n } from './i18n';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { Pill } from './components/UI';
@@ -86,6 +86,24 @@ function Shell({
     'pubgm.banner.dismissed',
     false,
   );
+
+  // Other modules can request a tab switch by dispatching window event
+  // `pubgm:nav` with detail.tab — used by Device Profile to push the user
+  // back to Sensitivity Builder after applying a preset.
+  useEffect(() => {
+    const valid: ReadonlySet<ModuleId> = new Set(NAV.map((n) => n.id));
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ tab?: string }>).detail;
+      const next = detail?.tab;
+      if (typeof next === 'string' && valid.has(next as ModuleId)) {
+        setTab(next as ModuleId);
+        setNavOpen(false);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    };
+    window.addEventListener('pubgm:nav', handler);
+    return () => window.removeEventListener('pubgm:nav', handler);
+  }, [setTab]);
 
   return (
     <div className="min-h-full">

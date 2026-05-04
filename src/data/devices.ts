@@ -48,11 +48,34 @@ export const DEVICE_MODELS: DeviceModel[] = [
   { id: 'redmi-9', name: 'Xiaomi Redmi 9 / 10', tier: 'low', maxRefreshRate: 60 },
 ];
 
+// Per-device override map. Lets us recommend a tuned preset that has every
+// scope filled in (camera + ADS + gyro), so users on flagship iPhones don't
+// land on a "Full Gyro" preset where every ADS field is 0 and the UI looks
+// broken to a non-gyro player.
+const DEVICE_PRESET_OVERRIDES: Record<string, string> = {
+  'iphone-15-pro': 'iphone_pro_120',
+  'iphone-14-pro': 'iphone_pro_120',
+  'iphone-13': 'iphone_60_stable',
+  's24-ultra': 'samsung_ultra_claw',
+  's23': 'samsung_ultra_claw',
+  'oneplus-12': 'oneplus_xiaomi_pro',
+  'xiaomi-13': 'oneplus_xiaomi_pro',
+  'pixel-9-pro': 'iphone_pro_120',
+  'rog-phone-8': 'rog_redmagic_tournament',
+  'red-magic': 'rog_redmagic_tournament',
+  'a54': 'mid_range_stable',
+  'redmi-note-13': 'mid_range_stable',
+  'poco-x6': 'mid_range_stable',
+  'nothing-phone-2': 'mid_range_stable',
+  'iphone-11': 'iphone_60_stable',
+};
+
 export function recommendForDevice(
   d: DeviceModel,
   refreshRate: RefreshRate = d.maxRefreshRate,
 ): DeviceProfile {
   const r = (Math.min(refreshRate, d.maxRefreshRate) || 60) as RefreshRate;
+  const overridePreset = DEVICE_PRESET_OVERRIDES[d.id];
   switch (d.tier) {
     case 'flagship':
       return {
@@ -62,7 +85,7 @@ export function recommendForDevice(
         graphicsFps: r >= 120 ? '120 FPS' : r >= 90 ? '90 FPS' : 'Extreme',
         styleAdvice:
           'Можно играть в любом стиле. Включай 120/90 FPS. Гироскоп — без потерь.',
-        recommendedPresetId: 'full_gyro_aggressive',
+        recommendedPresetId: overridePreset ?? 'iphone_pro_120',
       };
     case 'high':
       return {
@@ -72,7 +95,7 @@ export function recommendForDevice(
         graphicsFps: r >= 90 ? '90 FPS' : 'Extreme',
         styleAdvice:
           'Можно claw / 4-finger. 90+ FPS включай — снизит touch latency.',
-        recommendedPresetId: 'full_gyro_long',
+        recommendedPresetId: overridePreset ?? 'mixed_hybrid',
       };
     case 'mid':
       return {
@@ -82,7 +105,7 @@ export function recommendForDevice(
         graphicsFps: r >= 90 ? '90 FPS' : 'Ultra',
         styleAdvice:
           'Smooth + Ultra/90 FPS. Если есть троттлинг, ставь Smooth + High и охлаждай корпус.',
-        recommendedPresetId: 'mixed_hybrid',
+        recommendedPresetId: overridePreset ?? 'mid_range_stable',
       };
     case 'low':
       return {
@@ -92,7 +115,7 @@ export function recommendForDevice(
         graphicsFps: 'High',
         styleAdvice:
           'Только Smooth + High. Гироскоп может фризить — пробуй no-gyro пресет.',
-        recommendedPresetId: 'no_gyro_balanced',
+        recommendedPresetId: overridePreset ?? 'no_gyro_balanced',
       };
   }
 }
