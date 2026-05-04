@@ -1,10 +1,11 @@
 import { createContext, useContext } from 'react';
+import { WIZARD_KEYS } from './wizard';
 
 export type Lang = 'ru' | 'en';
 
 export type Dict = Record<string, string>;
 
-export const DICTIONARIES: Record<Lang, Dict> = {
+const BASE_DICTIONARIES: Record<Lang, Dict> = {
   ru: {
     'app.title': 'PUBGM Performance Toolkit',
     'app.subtitle':
@@ -1097,6 +1098,11 @@ export const DICTIONARIES: Record<Lang, Dict> = {
     'hud.apply.step4':
       '4. The layout will auto-load in matches. Use the in-game opacity slider to hide buttons you don’t need.',
   },
+};
+
+export const DICTIONARIES: Record<Lang, Dict> = {
+  ru: { ...BASE_DICTIONARIES.ru, ...WIZARD_KEYS.ru },
+  en: { ...BASE_DICTIONARIES.en, ...WIZARD_KEYS.en },
 };
 
 export interface I18nValue {

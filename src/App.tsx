@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Crosshair,
   Settings,
@@ -16,10 +16,16 @@ import {
   Map,
   Lightbulb,
   Info,
+  ArrowLeft,
   type LucideIcon,
 } from 'lucide-react';
 import { I18nContext, DICTIONARIES, type Lang, useI18n } from './i18n';
 import { useLocalStorage } from './hooks/useLocalStorage';
+import { Landing } from './setup/Landing';
+import { Wizard } from './setup/Wizard';
+import { SetupResultView } from './setup/SetupResult';
+import { generateSetup, type WizardAnswers, type SetupResult } from './setup/generator';
+import { DEFAULT_ANSWERS } from './setup/wizardConfig';
 
 const SensitivityBuilder = lazy(() => import('./modules/SensitivityBuilder'));
 const HudLayoutGenerator = lazy(() => import('./modules/HudLayoutGenerator'));
@@ -63,26 +69,60 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { id: 'sensitivity', labelKey: 'nav.sensitivity', Icon: Crosshair, accent: ['251 146 60', '249 115 22'] }, // orange
-  { id: 'controls', labelKey: 'nav.controls', Icon: Settings, accent: ['96 165 250', '59 130 246'] }, // blue
-  { id: 'pro', labelKey: 'nav.pro', Icon: Sparkles, accent: ['167 139 250', '139 92 246'] }, // violet
-  { id: 'hud', labelKey: 'nav.hud', Icon: LayoutGrid, accent: ['52 211 153', '16 185 129'] }, // emerald
-  { id: 'gyro', labelKey: 'nav.gyro', Icon: RotateCw, accent: ['34 211 238', '6 182 212'] }, // cyan
-  { id: 'recoil', labelKey: 'nav.recoil', Icon: TrendingUp, accent: ['251 113 133', '244 63 94'] }, // rose
-  { id: 'drill', labelKey: 'nav.drill', Icon: Target, accent: ['251 191 36', '245 158 11'] }, // amber
-  { id: 'ttk', labelKey: 'nav.ttk', Icon: Swords, accent: ['248 113 113', '239 68 68'] }, // red
-  { id: 'reaction', labelKey: 'nav.reaction', Icon: Zap, accent: ['163 230 53', '132 204 22'] }, // lime
-  { id: 'falloff', labelKey: 'nav.falloff', Icon: TrendingDown, accent: ['244 114 182', '236 72 153'] }, // pink
-  { id: 'loadout', labelKey: 'nav.loadout', Icon: Backpack, accent: ['45 212 191', '20 184 166'] }, // teal
-  { id: 'crosshair', labelKey: 'nav.crosshair', Icon: Plus, accent: ['129 140 248', '99 102 241'] }, // indigo
-  { id: 'device', labelKey: 'nav.device', Icon: Smartphone, accent: ['232 121 249', '217 70 239'] }, // fuchsia
-  { id: 'maps', labelKey: 'nav.maps', Icon: Map, accent: ['74 222 128', '34 197 94'] }, // green
-  { id: 'tips', labelKey: 'nav.tips', Icon: Lightbulb, accent: ['250 204 21', '234 179 8'] }, // yellow
+  { id: 'sensitivity', labelKey: 'nav.sensitivity', Icon: Crosshair, accent: ['251 146 60', '249 115 22'] },
+  { id: 'controls', labelKey: 'nav.controls', Icon: Settings, accent: ['96 165 250', '59 130 246'] },
+  { id: 'pro', labelKey: 'nav.pro', Icon: Sparkles, accent: ['167 139 250', '139 92 246'] },
+  { id: 'hud', labelKey: 'nav.hud', Icon: LayoutGrid, accent: ['52 211 153', '16 185 129'] },
+  { id: 'gyro', labelKey: 'nav.gyro', Icon: RotateCw, accent: ['34 211 238', '6 182 212'] },
+  { id: 'recoil', labelKey: 'nav.recoil', Icon: TrendingUp, accent: ['251 113 133', '244 63 94'] },
+  { id: 'drill', labelKey: 'nav.drill', Icon: Target, accent: ['251 191 36', '245 158 11'] },
+  { id: 'ttk', labelKey: 'nav.ttk', Icon: Swords, accent: ['248 113 113', '239 68 68'] },
+  { id: 'reaction', labelKey: 'nav.reaction', Icon: Zap, accent: ['163 230 53', '132 204 22'] },
+  { id: 'falloff', labelKey: 'nav.falloff', Icon: TrendingDown, accent: ['244 114 182', '236 72 153'] },
+  { id: 'loadout', labelKey: 'nav.loadout', Icon: Backpack, accent: ['45 212 191', '20 184 166'] },
+  { id: 'crosshair', labelKey: 'nav.crosshair', Icon: Plus, accent: ['129 140 248', '99 102 241'] },
+  { id: 'device', labelKey: 'nav.device', Icon: Smartphone, accent: ['232 121 249', '217 70 239'] },
+  { id: 'maps', labelKey: 'nav.maps', Icon: Map, accent: ['74 222 128', '34 197 94'] },
+  { id: 'tips', labelKey: 'nav.tips', Icon: Lightbulb, accent: ['250 204 21', '234 179 8'] },
 ];
+
+// View-level routing
+type View = 'landing' | 'wizard' | 'result' | 'tools';
+
+// Brand accent for the Setup Generator screens (orange/red mix → distinctive)
+const BRAND_ACCENT: [string, string] = ['251 146 60', '244 63 94'];
 
 export default function App() {
   const [lang, setLang] = useLocalStorage<Lang>('pubgm.lang', 'ru');
-  const [tab, setTab] = useLocalStorage<ModuleId>('pubgm.tab', 'sensitivity');
+  const [savedAnswers, setSavedAnswers] = useLocalStorage<WizardAnswers | null>(
+    'pubgm.setup.answers',
+    null,
+  );
+  const [view, setView] = useState<View>(() => {
+    // Bootstrap from URL ?setup=base64
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const data = params.get('setup');
+      if (data) {
+        try {
+          const decoded = JSON.parse(decodeURIComponent(atob(data))) as WizardAnswers;
+          // Stash for first render
+          window.localStorage.setItem(
+            'pubgm.setup.answers',
+            JSON.stringify(decoded),
+          );
+          // Strip query
+          const url = new URL(window.location.href);
+          url.searchParams.delete('setup');
+          window.history.replaceState({}, '', url.toString());
+          return 'result';
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return 'landing';
+  });
 
   const i18n = useMemo(
     () => ({
@@ -93,28 +133,150 @@ export default function App() {
     [lang, setLang],
   );
 
+  const result: SetupResult | null = useMemo(() => {
+    if (!savedAnswers) return null;
+    try {
+      return generateSetup(savedAnswers);
+    } catch {
+      return null;
+    }
+  }, [savedAnswers]);
+
+  function handleStartWizard() {
+    setView('wizard');
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }
+  function handleFinish(a: WizardAnswers) {
+    setSavedAnswers(a);
+    setView('result');
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }
+  function handleRestart() {
+    setSavedAnswers(null);
+    setView('wizard');
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }
+  function handleOpenTools() {
+    setView('tools');
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }
+  function handleBackToLanding() {
+    setView('landing');
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }
+  function handleOpenResult() {
+    setView('result');
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }
+
   return (
     <I18nContext.Provider value={i18n}>
-      <Shell tab={tab} setTab={setTab} />
+      {view === 'landing' && (
+        <BrandShell>
+          <Landing
+            hasSetup={!!result}
+            onStart={handleStartWizard}
+            onContinue={handleOpenResult}
+            onRestart={handleRestart}
+            onTools={handleOpenTools}
+          />
+        </BrandShell>
+      )}
+      {view === 'wizard' && (
+        <BrandShell>
+          <Wizard
+            initial={savedAnswers ?? DEFAULT_ANSWERS}
+            onCancel={handleBackToLanding}
+            onFinish={handleFinish}
+          />
+        </BrandShell>
+      )}
+      {view === 'result' && result && (
+        <BrandShell>
+          <ResultHeader onBack={handleBackToLanding} />
+          <SetupResultView
+            result={result}
+            onRestart={handleRestart}
+            onTools={handleOpenTools}
+          />
+        </BrandShell>
+      )}
+      {view === 'result' && !result && (
+        <BrandShell>
+          <Landing
+            hasSetup={false}
+            onStart={handleStartWizard}
+            onContinue={handleOpenResult}
+            onRestart={handleRestart}
+            onTools={handleOpenTools}
+          />
+        </BrandShell>
+      )}
+      {view === 'tools' && <ToolsShell onBack={handleBackToLanding} />}
     </I18nContext.Provider>
   );
 }
 
-function Shell({
-  tab,
-  setTab,
-}: {
-  tab: ModuleId;
-  setTab: (t: ModuleId) => void;
-}) {
+function BrandShell({ children }: { children: React.ReactNode }) {
+  const moduleStyle = {
+    ['--module-accent' as string]: BRAND_ACCENT[0],
+    ['--module-accent-2' as string]: BRAND_ACCENT[1],
+  } as React.CSSProperties;
+  return (
+    <div
+      className="mx-auto flex min-h-full max-w-[440px] flex-col"
+      style={moduleStyle}
+    >
+      <BrandTopBar />
+      {children}
+    </div>
+  );
+}
+
+function BrandTopBar() {
+  const { t } = useI18n();
+  return (
+    <header className="sticky top-0 z-20 flex items-center justify-between bg-bg/85 px-4 py-3 backdrop-blur">
+      <div className="flex items-center gap-2.5">
+        <div className="hero-grad grid h-9 w-9 place-items-center rounded-2xl shadow-[0_8px_22px_-6px_rgb(var(--module-accent)/0.7)]">
+          <Crosshair className="h-4.5 w-4.5 text-white" strokeWidth={2.5} />
+        </div>
+        <div className="leading-tight">
+          <div className="font-display text-[14px] font-bold tracking-tight text-text">
+            PUBGM Setup
+          </div>
+          <div className="text-[10.5px] font-medium text-text-dim">
+            {t('landing.eyebrow')}
+          </div>
+        </div>
+      </div>
+      <LangSwitcher />
+    </header>
+  );
+}
+
+function ResultHeader({ onBack }: { onBack: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="px-4 pt-2">
+      <button
+        onClick={onBack}
+        className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel/70 px-3 py-1.5 text-[12px] font-semibold text-text-soft hover:text-text"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" strokeWidth={2.5} />
+        {t('wizard.back')}
+      </button>
+    </div>
+  );
+}
+
+function ToolsShell({ onBack }: { onBack: () => void }) {
+  const [tab, setTab] = useLocalStorage<ModuleId>('pubgm.tab', 'sensitivity');
   const [bannerDismissed, setBannerDismissed] = useLocalStorage<boolean>(
     'pubgm.banner.dismissed',
     false,
   );
 
-  // Other modules can request a tab switch by dispatching window event
-  // `pubgm:nav` with detail.tab — used by Device Profile to push the user
-  // back to Sensitivity Builder after applying a preset.
   useEffect(() => {
     const valid: ReadonlySet<ModuleId> = new Set(NAV.map((n) => n.id));
     const handler = (e: Event) => {
@@ -129,7 +291,6 @@ function Shell({
     return () => window.removeEventListener('pubgm:nav', handler);
   }, [setTab]);
 
-  // Set CSS vars for current module's accent
   const navItem = NAV.find((n) => n.id === tab) ?? NAV[0];
   const moduleStyle = {
     ['--module-accent' as string]: navItem.accent[0],
@@ -146,6 +307,7 @@ function Shell({
         navItem={navItem}
         bannerDismissed={bannerDismissed}
         showBanner={() => setBannerDismissed(false)}
+        onBack={onBack}
       />
       <TopTabStrip tab={tab} setTab={setTab} />
       <main className="min-w-0 flex-1 space-y-3 px-4 pb-32 pt-3">
@@ -296,31 +458,26 @@ function Hero({
   showBanner,
   tab,
   navItem,
+  onBack,
 }: {
   bannerDismissed: boolean;
   showBanner: () => void;
   tab: ModuleId;
   navItem: NavItem;
+  onBack: () => void;
 }) {
   const { t } = useI18n();
   const Icon = navItem.Icon;
-  // Re-trigger animation when module changes
   return (
     <header className="relative px-4 pt-5">
       <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="hero-grad grid h-10 w-10 place-items-center rounded-2xl shadow-[0_8px_22px_-6px_rgb(var(--module-accent)/0.7)]">
-            <Crosshair className="h-5 w-5 text-white" strokeWidth={2.5} />
-          </div>
-          <div className="leading-tight">
-            <div className="font-display text-[15px] font-bold tracking-tight text-text">
-              PUBGM Toolkit
-            </div>
-            <div className="text-[11px] font-medium text-text-dim">
-              v0.2 · S{30}
-            </div>
-          </div>
-        </div>
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 rounded-full border border-line bg-panel/80 px-3 py-1.5 text-[12px] font-semibold text-text-soft hover:text-text"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" strokeWidth={2.5} />
+          <span>Setup</span>
+        </button>
         <div className="flex items-center gap-2">
           {bannerDismissed && (
             <button
@@ -335,12 +492,10 @@ function Hero({
         </div>
       </div>
 
-      {/* Big hero card */}
       <div
         key={tab}
         className="hero-grad pop-in relative overflow-hidden rounded-3xl p-5 shadow-[0_18px_50px_-12px_rgb(var(--module-accent)/0.55)]"
       >
-        {/* Decorative bg blobs */}
         <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
         <div className="pointer-events-none absolute -bottom-8 -left-6 h-32 w-32 rounded-full bg-black/15 blur-2xl" />
         <div className="relative flex items-end justify-between gap-3">
