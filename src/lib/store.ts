@@ -2,6 +2,19 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { ENGINE, PERSISTENCE } from "@/config/protocol";
+import {
+  MIN_DEPOSIT,
+  MIN_WITHDRAWAL,
+  WITHDRAWAL_FEE,
+  WITHDRAWAL_SETTLE_MS,
+  addressError,
+  defaultNetworkFor,
+  depositAddressFor,
+  getNetwork,
+  isValidAddress,
+  mockTxHash,
+  shortAddress,
+} from "@/lib/wallet";
 import type {
   AppNotification,
   AppTab,
@@ -9,6 +22,7 @@ import type {
   KycStatus,
   Language,
   NotificationKind,
+  PaymentNetwork,
   Transaction,
   TransactionType,
   UserProfile,
@@ -31,8 +45,6 @@ const MAX_CATCH_UP_MS = 30 * ENGINE.msPerDay;
 const MAX_TRANSACTIONS = 200;
 const MAX_NOTIFICATIONS = 100;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** TRC-20 (T…, 34 chars) or ERC-20/BEP-20 (0x…, 40 hex). */
-const PAYOUT_ADDRESS_RE = /^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[a-fA-F0-9]{40})$/;
 const SEED_TIME = "2026-09-29T00:00:00.000Z";
 
 /* ------------------------------------------------------------------ */
@@ -90,8 +102,8 @@ export interface StoreActions {
   updateKyc: () => ActionResult;
   updatePayoutAddress: (address: string) => ActionResult;
 
-  deposit: (amount: number) => ActionResult;
-  withdraw: (amount: number) => ActionResult;
+  deposit: (amount: number, network?: PaymentNetwork) => ActionResult;
+  withdraw: (amount: number, address: string, network?: PaymentNetwork) => ActionResult;
   manualBalanceOverride: (patch: Partial<WalletBalances>) => ActionResult;
 
   addTier: (input: TierInput) => ActionResult;
@@ -147,9 +159,16 @@ function parseAmount(value: number): number | null {
 function makeTx(
   type: TransactionType,
   amount: Usd,
-  extra: { note?: string; positionId?: string } = {},
+  extra: Partial<Omit<Transaction, "id" | "type" | "amount" | "createdAt">> = {},
 ): Transaction {
-  return { id: uid("tx"), type, amount, createdAt: new Date().toISOString(), ...extra };
+  return {
+    id: uid("tx"),
+    type,
+    amount,
+    createdAt: new Date().toISOString(),
+    status: "COMPLETED",
+    ...extra,
+  };
 }
 
 function makeNotification(input: NotificationInput): AppNotification {
@@ -258,7 +277,62 @@ function createInitialData(): StoreData {
 /* Pure engine logic                                                   */
 /* ------------------------------------------------------------------ */
 
-type Settleable = Pick<StoreData, "balances" | "positions" | "dailyAccrualDay">;
+type Settleable = Pick<StoreData, "balances" | "positions" | "dailyAccrualDay" | "transactions">;
+
+/**
+ * One live-updating ledger row per position per UTC day, so the history shows
+ * VIP earnings without a new entry on every tick.
+ */
+function recordEarnings(
+  list: Transaction[],
+  rewards: Array<{ position: VaultPosition; reward: number }>,
+  day: string,
+  stamp: string,
+): Transaction[] {
+  if (rewards.length === 0) return list;
+  const next = [...list];
+  const fresh: Transaction[] = [];
+  for (const { position, reward } of rewards) {
+    const id = `earn_${position.id}_${day}`;
+    const index = next.findIndex((t) => t.id === id);
+    const existing = index >= 0 ? next[index] : undefined;
+    if (existing) {
+      next[index] = { ...existing, amount: existing.amount + reward };
+    } else {
+      fresh.push({
+        id,
+        type: "earning",
+        amount: reward,
+        positionId: position.id,
+        createdAt: stamp,
+        note: position.tierName,
+        status: "COMPLETED",
+      });
+    }
+  }
+  return [...fresh, ...next].slice(0, MAX_TRANSACTIONS);
+}
+
+/** Completes withdrawals that have been PENDING long enough. */
+function settlePending(
+  list: Transaction[],
+  now: number,
+): { transactions: Transaction[]; completed: Transaction[] } | null {
+  const completed: Transaction[] = [];
+  const transactions = list.map((t) => {
+    if (t.type !== "withdraw" || t.status !== "PENDING") return t;
+    if (now - Date.parse(t.createdAt) < WITHDRAWAL_SETTLE_MS) return t;
+    const done: Transaction = {
+      ...t,
+      status: "COMPLETED",
+      txHash: mockTxHash(t.network ?? "trc20"),
+      completedAt: new Date(now).toISOString(),
+    };
+    completed.push(done);
+    return done;
+  });
+  return completed.length > 0 ? { transactions, completed } : null;
+}
 
 /**
  * Accrues yield on every active position up to `now` and credits it to the
@@ -267,6 +341,7 @@ type Settleable = Pick<StoreData, "balances" | "positions" | "dailyAccrualDay">;
 function settle(s: Settleable, now: number): Settleable | null {
   const day = utcDay(now);
   const stamp = new Date(now).toISOString();
+  const rewards: Array<{ position: VaultPosition; reward: number }> = [];
   let earned = 0;
 
   const positions = s.positions.map((p) => {
@@ -275,6 +350,7 @@ function settle(s: Settleable, now: number): Settleable | null {
     if (!(elapsed > 0)) return p;
     const reward = p.principal * (p.dailyRatePct / 100) * (elapsed / ENGINE.msPerDay);
     earned += reward;
+    rewards.push({ position: p, reward });
     return { ...p, accrued: p.accrued + reward, lastAccruedAt: stamp };
   });
 
@@ -284,6 +360,7 @@ function settle(s: Settleable, now: number): Settleable | null {
   return {
     positions,
     dailyAccrualDay: day,
+    transactions: recordEarnings(s.transactions, rewards, day, stamp),
     balances: {
       ...s.balances,
       available: s.balances.available + earned,
@@ -478,7 +555,7 @@ export const useAppStore = create<StoreState>()(
         const s = get();
         if (s.user.isGuest) return fail("Sign in to set a payout address.");
         const value = address.trim();
-        if (!PAYOUT_ADDRESS_RE.test(value))
+        if (!isValidAddress(value))
           return fail("Enter a valid TRC-20 (T…) or ERC-20/BEP-20 (0x…) address.");
         set({
           user: { ...s.user, payoutAddress: value },
@@ -496,49 +573,66 @@ export const useAppStore = create<StoreState>()(
 
       /* ---------------- Wallet ---------------- */
 
-      deposit: (amount) => {
+      deposit: (amount, network = "trc20") => {
         const value = parseAmount(amount);
         if (value === null) return fail("Enter a valid amount.");
+        if (value < MIN_DEPOSIT) return fail(`Minimum deposit is ${fmt(MIN_DEPOSIT)} USDT.`);
         const s = get();
+        const label = getNetwork(network).label;
+        const tx = makeTx("deposit", value, {
+          network,
+          address: depositAddressFor(s.user.id, network),
+          txHash: mockTxHash(network),
+        });
         set({
           balances: { ...s.balances, available: s.balances.available + value },
-          transactions: prependTx(s.transactions, makeTx("deposit", value)),
+          transactions: prependTx(s.transactions, tx),
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "wallet",
               title: "Deposit received",
-              body: `${fmt(value)} USDT credited to your available balance.`,
+              body: `${fmt(value)} USDT arrived via ${label} and was credited to your available balance.`,
             }),
           ),
         });
-        return OK;
+        return okWith(tx.id);
       },
 
-      withdraw: (amount) => {
+      withdraw: (amount, address, network) => {
         const value = parseAmount(amount);
         if (value === null) return fail("Enter a valid amount.");
+        const to = address.trim();
+        const chosen = network ?? defaultNetworkFor(to);
+        if (!chosen) return fail("Enter a valid TRC-20 (T…) or ERC-20/BEP-20 (0x…) address.");
+        const addressProblem = addressError(to, chosen);
+        if (addressProblem) return fail(addressProblem);
+        if (value < MIN_WITHDRAWAL) return fail(`Minimum withdrawal is ${fmt(MIN_WITHDRAWAL)} USDT.`);
+
         get().tickYieldEngine();
         const s = get();
         if (value > s.balances.available)
           return fail(`Insufficient available balance (${fmt(s.balances.available)} USDT).`);
-        const to = s.user.payoutAddress;
+
+        const tx = makeTx("withdraw", value, {
+          status: "PENDING",
+          network: chosen,
+          address: to,
+          fee: WITHDRAWAL_FEE,
+        });
         set({
           balances: { ...s.balances, available: s.balances.available - value },
-          transactions: prependTx(
-            s.transactions,
-            makeTx("withdraw", value, { note: to ? `To ${to}` : "No payout address set" }),
-          ),
+          transactions: prependTx(s.transactions, tx),
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "wallet",
-              title: "Withdrawal processed",
-              body: `${fmt(value)} USDT withdrawn from your available balance.`,
+              title: "Withdrawal requested",
+              body: `${fmt(round6(value - WITHDRAWAL_FEE))} USDT (after the ${fmt(WITHDRAWAL_FEE)} USDT fee) is on its way to ${shortAddress(to)} via ${getNetwork(chosen).label}.`,
             }),
           ),
         });
-        return OK;
+        return okWith(tx.id);
       },
 
       manualBalanceOverride: (patch) => {
@@ -789,8 +883,26 @@ export const useAppStore = create<StoreState>()(
       },
 
       tickYieldEngine: (now = Date.now()) => {
-        const patch = settle(get(), now);
-        if (patch) set(patch);
+        const s = get();
+        const yieldPatch = settle(s, now);
+        const pending = settlePending(yieldPatch?.transactions ?? s.transactions, now);
+        if (!yieldPatch && !pending) return;
+        set({
+          ...yieldPatch,
+          ...(pending && {
+            transactions: pending.transactions,
+            notifications: prependNotifications(
+              s.notifications,
+              ...pending.completed.map((t) =>
+                makeNotification({
+                  kind: "wallet",
+                  title: "Withdrawal completed",
+                  body: `${fmt(round6(t.amount - (t.fee ?? 0)))} USDT was sent to ${shortAddress(t.address ?? "")}.`,
+                }),
+              ),
+            ),
+          }),
+        });
       },
 
       /* ---------------- Notifications ---------------- */
@@ -833,6 +945,18 @@ export const useAppStore = create<StoreState>()(
         const state = (persisted ?? {}) as Record<string, unknown>;
         // v1 -> v2: the "terminal" tab was renamed "main".
         if (version < 2 && state.activeTab === "terminal") state.activeTab = "main";
+        // v2 -> v3: every transaction gained a status.
+        if (version < 3) {
+          const withStatus = (list: unknown) =>
+            Array.isArray(list) ? list.map((t) => ({ status: "COMPLETED", ...t })) : list;
+          state.transactions = withStatus(state.transactions);
+          const accounts = state.accounts as Record<string, Record<string, unknown>> | undefined;
+          if (accounts) {
+            for (const account of Object.values(accounts)) {
+              account.transactions = withStatus(account.transactions);
+            }
+          }
+        }
         return state as unknown as StoreState;
       },
     },

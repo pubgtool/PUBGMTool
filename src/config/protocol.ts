@@ -19,5 +19,5 @@ export const ENGINE = {
 export const PERSISTENCE = {
   storageKey: "nexus-protocol:v1",
   /** Bump when the persisted shape changes; the store migrates or resets. */
-  version: 2,
+  version: 3,
 } as const;

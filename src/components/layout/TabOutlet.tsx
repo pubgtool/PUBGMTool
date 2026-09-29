@@ -4,14 +4,12 @@ import { useLayoutEffect } from "react";
 import { NAV_ITEMS } from "@/components/layout/BottomNav";
 import { MainView } from "@/components/screens/MainView";
 import { VaultsView } from "@/components/screens/VaultsView";
-import { formatUsdt } from "@/lib/format";
-import { selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
+import { WalletView } from "@/components/screens/WalletView";
+import { selectUnreadCount, useAppStore } from "@/lib/store";
 
 /** Live summary for tabs whose full screen has not shipped yet. */
 function PlaceholderView() {
   const tab = useAppStore((s) => s.activeTab);
-  const total = useAppStore(selectTotalBalance);
-  const balances = useAppStore((s) => s.balances);
   const unread = useAppStore(selectUnreadCount);
   const user = useAppStore((s) => s.user);
 
@@ -24,12 +22,7 @@ function PlaceholderView() {
             ["Account", user.displayName],
             ["KYC", user.kycStatus],
           ]
-        : [
-            ["Total balance", formatUsdt(total)],
-            ["Available", formatUsdt(balances.available)],
-            ["Invested", formatUsdt(balances.staked)],
-            ["Earned today", formatUsdt(balances.dailyAccrued)],
-          ];
+        : [["Status", "Coming soon"]];
 
   return (
     <main className="flex-1 px-4 pt-6">
@@ -57,5 +50,6 @@ export function TabOutlet() {
 
   if (tab === "main") return <MainView />;
   if (tab === "vaults") return <VaultsView />;
+  if (tab === "wallet") return <WalletView />;
   return <PlaceholderView />;
 }

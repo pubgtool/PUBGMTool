@@ -3,8 +3,13 @@
 export type IsoTimestamp = string;
 export type Usd = number;
 
+export type PaymentNetwork = "trc20" | "bep20" | "erc20";
+
+export type TransactionStatus = "PENDING" | "COMPLETED";
+
 export type TransactionType =
   | "deposit"
+  | "earning"
   | "stake"
   | "unstake"
   | "early_unstake"
@@ -21,6 +26,14 @@ export interface Transaction {
   positionId?: string;
   createdAt: IsoTimestamp;
   note?: string;
+  status: TransactionStatus;
+  network?: PaymentNetwork;
+  /** Deposit address (deposits) or destination address (withdrawals). */
+  address?: string;
+  txHash?: string;
+  /** Flat network fee; withdrawals only. `amount` is the gross debit. */
+  fee?: Usd;
+  completedAt?: IsoTimestamp;
 }
 
 export type LegalSlug = "terms" | "risk" | "privacy";
