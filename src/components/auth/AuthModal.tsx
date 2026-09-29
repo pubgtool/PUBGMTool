@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Lock, ShieldCheck, X } from "lucide-react";
 import { ForgotForm } from "@/components/auth/ForgotForm";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { RegisterForm } from "@/components/auth/RegisterForm";
+import { AnimatedHeight } from "@/components/ui/AnimatedHeight";
 import { BottomSheet, SheetDescription, SheetTitle } from "@/components/ui/BottomSheet";
 import { PROTOCOL } from "@/config/protocol";
 import { useAppStore } from "@/lib/store";
@@ -133,27 +134,5 @@ function AuthBody({ onClose }: { onClose: () => void }) {
         {PROTOCOL.name} sandbox · accounts and balances stay in this browser
       </p>
     </div>
-  );
-}
-
-/** Animates between content heights so switching tabs doesn't make the sheet jump. */
-function AnimatedHeight({ children }: { children: React.ReactNode }) {
-  const inner = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | "auto">("auto");
-  const reduceMotion = useReducedMotion();
-
-  useLayoutEffect(() => {
-    const el = inner.current;
-    if (!el) return;
-    setHeight(el.offsetHeight);
-    const observer = new ResizeObserver(() => setHeight(el.offsetHeight));
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <motion.div initial={false} animate={{ height }} transition={reduceMotion ? { duration: 0 } : SPRING} className="overflow-hidden">
-      <div ref={inner}>{children}</div>
-    </motion.div>
   );
 }

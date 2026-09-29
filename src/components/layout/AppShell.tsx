@@ -1,4 +1,5 @@
 import { AuthModal } from "@/components/auth/AuthModal";
+import { KYCModal } from "@/components/kyc/KYCModal";
 import { AppProviders } from "@/components/providers/AppProviders";
 import { ToastHost } from "@/components/ui/Toast";
 import { BottomNav } from "@/components/layout/BottomNav";
@@ -12,6 +13,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <BottomNav />
         <AuthModal />
+        <KYCModal />
       </AppProviders>
       <ToastHost />
     </div>

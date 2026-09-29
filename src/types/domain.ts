@@ -57,6 +57,31 @@ export interface LegalDocument {
 
 export type KycStatus = "NONE" | "PENDING" | "VERIFIED" | "REJECTED";
 
+/** 0 unverified, 1 basic identity, 2 enhanced institutional. */
+export type KycTier = 0 | 1 | 2;
+
+export type KycDocumentType =
+  | "national_id"
+  | "passport"
+  | "drivers_license"
+  | "utility_bill"
+  | "bank_statement"
+  | "node_certificate";
+
+/**
+ * What is kept about the latest submission. Names, dates of birth and the
+ * documents themselves are deliberately not stored: nothing here needs them.
+ */
+export interface KycSubmission {
+  /** The level this submission asks for. */
+  tier: 1 | 2;
+  /** ISO 3166-1 alpha-2; empty when unknown. */
+  country: string;
+  documentType: KycDocumentType;
+  livenessCompleted: boolean;
+  submittedAt: IsoTimestamp;
+}
+
 export type UserRole = "user" | "admin";
 
 export type AuthTab = "login" | "register" | "forgot";
@@ -127,7 +152,13 @@ export interface UserProfile {
   referredBy: string | null;
   displayName: string;
   isGuest: boolean;
+  /** Highest level granted so far. */
+  kycTier: KycTier;
+  /** State of the latest submission; NONE until the first one. */
   kycStatus: KycStatus;
+  kycSubmittedAt?: IsoTimestamp;
+  kycRejectionReason?: string;
+  kycSubmission?: KycSubmission;
   payoutAddress: string | null;
   createdAt: IsoTimestamp;
   /** Absent means "user". Nothing assigns "admin" yet. */

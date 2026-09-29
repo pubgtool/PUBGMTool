@@ -112,10 +112,10 @@ export function MainView() {
                 VIP {vipLevel}
               </span>
             )}
-            {user.kycStatus === "VERIFIED" && (
-              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" aria-label="KYC verified" />
+            {user.kycTier >= 1 && (
+              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" aria-label={`KYC verified, level ${user.kycTier}`} />
             )}
-            {user.kycStatus === "PENDING" && (
+            {user.kycTier === 0 && user.kycStatus === "PENDING" && (
               <ShieldAlert className="h-4 w-4 shrink-0 text-amber-500" aria-label="KYC pending" />
             )}
           </div>

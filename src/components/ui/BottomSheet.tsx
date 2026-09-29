@@ -96,6 +96,10 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false, to
                   event.preventDefault();
                   contentRef.current?.focus({ preventScroll: true });
                 }}
+                onEscapeKeyDown={(event) => {
+                  // An open dropdown inside the sheet handles Escape itself instead of closing the sheet.
+                  if (document.querySelector("[data-escape-block]")) event.preventDefault();
+                }}
                 onCloseAutoFocus={(event) => {
                   event.preventDefault();
                   returnFocus.current?.focus({ preventScroll: true });

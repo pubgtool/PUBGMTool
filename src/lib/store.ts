@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { AUTH, ENGINE, PERSISTENCE, REFERRAL } from "@/config/protocol";
+import { DOCUMENT_TYPES, DOCUMENT_TYPES_BY_TIER, KYC, rejectionReasonsFor } from "@/config/kyc";
 import { CHECK_IN_CYCLE, CHECK_IN_REWARDS, PROMO_RULES, getTaskDef, seedPromoCodes } from "@/config/rewards";
 import { checkInView, computeTaskBonus, mysteryBonus, normalizeCode, taskView } from "@/lib/rewards";
 import {
@@ -15,6 +16,7 @@ import {
 } from "@/lib/credentials";
 import { buildDemoAccount, DEMO_TIER } from "@/lib/demo";
 import { deriveNumericId, generateNumericId } from "@/lib/identity";
+import { canWithdraw, dailyLimitFor, getCountries, nextTier, remainingToday } from "@/lib/kyc";
 import { parseIdentifier, type IdentifierKind } from "@/lib/identifiers";
 import { checkCode, consumeCode, issueCode } from "@/lib/passwordReset";
 import { markBrowserSession } from "@/lib/session";
@@ -38,7 +40,8 @@ import type {
   AuthTab,
   AppTab,
   FundingSource,
-  KycStatus,
+  KycDocumentType,
+  KycSubmission,
   Language,
   NotificationKind,
   PaymentNetwork,
@@ -99,6 +102,15 @@ export type RegisterInput = {
   displayName?: string;
 };
 
+export type KycSubmitInput = {
+  /** Must be the level after the one already granted. */
+  tier: 1 | 2;
+  documentType: KycDocumentType;
+  /** ISO alpha-2; required for level 1, carried over for level 2. */
+  country?: string;
+  livenessCompleted?: boolean;
+};
+
 export type LoginInput = { identifier: string; password: string; remember?: boolean };
 
 export type ResetRequestResult =
@@ -147,6 +159,8 @@ export interface StoreData {
   pendingReferral: string | null;
   /** Transient (not persisted): the global sign-in modal. */
   isAuthModalOpen: boolean;
+  /** Transient (not persisted): the KYC center. */
+  isKycModalOpen: boolean;
   authModalTab: AuthTab;
   authModalReason: string | null;
   /** Gift codes shared by every account on this device. */
@@ -172,10 +186,14 @@ export interface StoreActions {
   closeAuthModal: () => void;
   setAuthModalTab: (tab: AuthTab) => void;
   setPendingReferral: (code: string | null) => void;
-  updateKyc: () => ActionResult;
+  /** Sends a verification request for review; the review itself is simulated. */
+  submitKyc: (input: KycSubmitInput, now?: number) => ActionResult;
+  /** Sandbox: resolves a PENDING verification. A rejection carries its reason. */
+  reviewKyc: (decision: "VERIFIED" | "REJECTED", reason?: string) => ActionResult;
+  /** Opens the KYC center; guests are sent to sign in first. */
+  openKycModal: () => void;
+  closeKycModal: () => void;
   updatePayoutAddress: (address: string) => ActionResult;
-  /** Sandbox: resolves a PENDING verification. */
-  reviewKyc: (decision: "VERIFIED" | "REJECTED") => ActionResult;
   setSecurityPreference: (key: keyof SecuritySettings, value: boolean) => ActionResult;
   /** Sandbox: registers a Tier 1 invite and credits its commission. */
   simulateReferral: () => ActionResult;
@@ -295,6 +313,7 @@ const GUEST_USER: UserProfile = {
   referredBy: null,
   displayName: "Guest",
   isGuest: true,
+  kycTier: 0,
   kycStatus: "NONE",
   payoutAddress: null,
   createdAt: SEED_TIME,
@@ -380,6 +399,7 @@ function createInitialData(): StoreData {
     session: { remember: true },
     pendingReferral: null,
     isAuthModalOpen: false,
+    isKycModalOpen: false,
     authModalTab: "login",
     authModalReason: null,
     promoCodes: seedPromoCodes(),
@@ -548,6 +568,12 @@ function enterAccount(s: StoreState, key: string, remember: boolean): Partial<St
   };
 }
 
+function withoutRejection(user: UserProfile): UserProfile {
+  const next = { ...user };
+  delete next.kycRejectionReason;
+  return next;
+}
+
 const GENERIC_LOGIN_ERROR = "Incorrect email/phone or password.";
 
 function validateTier(tier: VipTier, others: VipTier[]): string | null {
@@ -671,6 +697,7 @@ export const useAppStore = create<StoreState>()(
           referredBy: referrer?.user.uid ?? null,
           displayName: name || (parsed.kind === "email" ? (parsed.key.split("@")[0] ?? "Member") : `Member${parsed.key.slice(-4)}`),
           isGuest: false,
+          kycTier: 0,
           kycStatus: "NONE",
           payoutAddress: null,
           createdAt: new Date(now).toISOString(),
@@ -818,29 +845,103 @@ export const useAppStore = create<StoreState>()(
           walletSection: "deposit",
           focusedTierId: null,
           isAuthModalOpen: false,
+          isKycModalOpen: false,
           authModalReason: null,
         });
       },
 
-      updateKyc: () => {
+      submitKyc: ({ tier, documentType, country, livenessCompleted = false }, now = Date.now()) => {
         const s = get();
         if (s.user.isGuest) return fail("Sign in to submit verification.");
-        if (s.user.kycStatus === "PENDING") return fail("Verification is already under review.");
-        if (s.user.kycStatus === "VERIFIED") return fail("Your identity is already verified.");
-        const status: KycStatus = "PENDING";
+        if (s.user.kycStatus === "PENDING") return fail("Your verification is already under review.");
+        const expected = nextTier(s.user.kycTier);
+        if (expected === null) return fail("Your identity is fully verified.");
+        if (tier !== expected)
+          return fail(tier > expected ? "Complete the previous verification level first." : "You already hold this verification level.");
+        if (!DOCUMENT_TYPES_BY_TIER[tier].includes(documentType) || !DOCUMENT_TYPES[documentType])
+          return fail("Choose a document type that is accepted for this level.");
+
+        let resolvedCountry = "";
+        if (tier === 1) {
+          resolvedCountry = (country ?? "").toUpperCase();
+          if (!getCountries().some((c) => c.code === resolvedCountry)) return fail("Choose your country or region.");
+          if (KYC.enableLivenessStep && !livenessCompleted) return fail("Complete the facial liveness check first.");
+        } else {
+          resolvedCountry = s.user.kycSubmission?.country ?? "";
+        }
+
+        const submittedAt = new Date(now).toISOString();
+        const submission: KycSubmission = {
+          tier,
+          country: resolvedCountry,
+          documentType,
+          livenessCompleted: tier === 1 && KYC.enableLivenessStep ? livenessCompleted : false,
+          submittedAt,
+        };
         set({
-          user: { ...s.user, kycStatus: status },
+          user: { ...withoutRejection(s.user), kycStatus: "PENDING", kycSubmittedAt: submittedAt, kycSubmission: submission },
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "account",
               title: "Verification submitted",
-              body: "Your KYC documents are pending review.",
+              body: `Your Level ${tier} documents are under review. This usually takes ${KYC.reviewEta}.`,
             }),
           ),
         });
         return OK;
       },
+
+      reviewKyc: (decision, reason) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in first.");
+        if (s.user.kycStatus !== "PENDING") return fail("No verification is awaiting review.");
+        const level = s.user.kycSubmission?.tier ?? nextTier(s.user.kycTier) ?? 1;
+
+        if (decision === "VERIFIED") {
+          set({
+            user: { ...withoutRejection(s.user), kycTier: level, kycStatus: "VERIFIED" },
+            notifications: prependNotifications(
+              s.notifications,
+              makeNotification({
+                kind: "account",
+                title: `Level ${level} verified`,
+                body:
+                  level === 1
+                    ? `Your identity is verified. You can now withdraw up to ${fmt(dailyLimitFor(1) ?? 0)} USDT per day.`
+                    : "Your enhanced verification was approved. Withdrawals are no longer capped.",
+              }),
+            ),
+          });
+          return OK;
+        }
+
+        const allowed = rejectionReasonsFor(level, KYC.enableLivenessStep);
+        const chosen = reason?.trim() || "Verification could not be completed";
+        if (reason && !allowed.includes(chosen)) return fail("Choose one of the listed reasons.");
+        set({
+          user: { ...s.user, kycStatus: "REJECTED", kycRejectionReason: chosen },
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "account",
+              title: "Verification rejected",
+              body: `${chosen}. You can correct it and submit again.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      openKycModal: () => {
+        if (get().user.isGuest) {
+          set({ isAuthModalOpen: true, authModalTab: "login", authModalReason: "Sign in to verify your identity" });
+          return;
+        }
+        set({ isKycModalOpen: true });
+      },
+
+      closeKycModal: () => set({ isKycModalOpen: false }),
 
       updatePayoutAddress: (address) => {
         const s = get();
@@ -856,27 +957,6 @@ export const useAppStore = create<StoreState>()(
               kind: "account",
               title: "Payout address updated",
               body: `Withdrawals will go to ${value.slice(0, 6)}…${value.slice(-4)}.`,
-            }),
-          ),
-        });
-        return OK;
-      },
-
-      reviewKyc: (decision) => {
-        const s = get();
-        if (s.user.isGuest) return fail("Sign in first.");
-        if (s.user.kycStatus !== "PENDING") return fail("No verification is awaiting review.");
-        const approved = decision === "VERIFIED";
-        set({
-          user: { ...s.user, kycStatus: decision },
-          notifications: prependNotifications(
-            s.notifications,
-            makeNotification({
-              kind: "account",
-              title: approved ? "Identity verified" : "Verification rejected",
-              body: approved
-                ? "Your Level 1 verification was approved."
-                : "We couldn't verify your documents. You can submit them again.",
             }),
           ),
         });
@@ -964,6 +1044,8 @@ export const useAppStore = create<StoreState>()(
 
       withdraw: (amount, address, network) => {
         if (get().user.isGuest) return fail("Sign in to withdraw.");
+        if (!canWithdraw(get().user.kycTier))
+          return fail("Identity verification is required before withdrawals. Verify your identity to continue.");
         const value = parseAmount(amount);
         if (value === null) return fail("Enter a valid amount.");
         const to = address.trim();
@@ -977,6 +1059,11 @@ export const useAppStore = create<StoreState>()(
         const s = get();
         if (value > s.balances.available)
           return fail(`Insufficient available balance (${fmt(s.balances.available)} USDT).`);
+        const left = remainingToday(s.user.kycTier, s.transactions, Date.now());
+        if (left !== null && value > left)
+          return fail(
+            `Daily withdrawal limit exceeded. You can withdraw up to ${fmt(left)} USDT more today (limit ${fmt(dailyLimitFor(s.user.kycTier) ?? 0)} USDT).`,
+          );
 
         const tx = makeTx("withdraw", value, {
           status: "PENDING",
@@ -1563,6 +1650,18 @@ export const useAppStore = create<StoreState>()(
           }
           for (const account of Object.values(accounts ?? {})) {
             if (account.user) account.user = withIdentity(account.user);
+          }
+        }
+        // v6 -> v7: verification levels. The old single "verified" state is level 1.
+        if (version < 7) {
+          const accounts = state.accounts as Record<string, { user?: Record<string, unknown> }> | undefined;
+          const withTier = (user: Record<string, unknown>) => ({
+            ...user,
+            kycTier: user.kycTier ?? (user.kycStatus === "VERIFIED" ? 1 : 0),
+          });
+          if (state.user && typeof state.user === "object") state.user = withTier(state.user as Record<string, unknown>);
+          for (const account of Object.values(accounts ?? {})) {
+            if (account.user) account.user = withTier(account.user);
           }
         }
         return state as unknown as StoreState;

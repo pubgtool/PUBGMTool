@@ -8,27 +8,28 @@ import { toast } from "@/components/ui/Toast";
 import { ADMIN } from "@/config/protocol";
 import { useChatStore } from "@/lib/chat";
 import { initialsOf } from "@/lib/identity";
+import { kycBadge, type KycBadgeTone } from "@/lib/kyc";
 import { useAppStore } from "@/lib/store";
-import type { KycStatus } from "@/types/domain";
 
 const TAP = { scale: 0.96 } as const;
 const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 
-const KYC_CHIP: Record<KycStatus, { label: string; Icon: LucideIcon; className: string }> = {
-  NONE: { label: "Verify identity", Icon: ShieldAlert, className: "bg-slate-100 text-slate-700" },
-  PENDING: { label: "Pending Verification", Icon: ShieldAlert, className: "bg-amber-50 text-amber-700" },
-  VERIFIED: { label: "Verified Level 1", Icon: ShieldCheck, className: "bg-emerald-50 text-emerald-700" },
-  REJECTED: { label: "Verification rejected", Icon: ShieldX, className: "bg-rose-50 text-rose-700" },
+const KYC_CHIP: Record<KycBadgeTone, { Icon: LucideIcon; className: string }> = {
+  none: { Icon: ShieldAlert, className: "bg-slate-100 text-slate-700" },
+  pending: { Icon: ShieldAlert, className: "bg-amber-50 text-amber-700" },
+  verified: { Icon: ShieldCheck, className: "bg-emerald-50 text-emerald-700" },
+  rejected: { Icon: ShieldX, className: "bg-rose-50 text-rose-700" },
 };
 
 const joined = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
 
-export function IdentityCard({ onOpenKyc }: { onOpenKyc: () => void }) {
+export function IdentityCard() {
   const user = useAppStore((s) => s.user);
   const positions = useAppStore((s) => s.positions);
   const logout = useAppStore((s) => s.logout);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const openAuthModal = useAppStore((s) => s.openAuthModal);
+  const openKycModal = useAppStore((s) => s.openKycModal);
 
   const vipLevel = useMemo(
     () => positions.reduce((max, p) => (p.status === "active" ? Math.max(max, p.tierLevel) : max), 0),
@@ -82,7 +83,8 @@ export function IdentityCard({ onOpenKyc }: { onOpenKyc: () => void }) {
     );
   }
 
-  const kyc = KYC_CHIP[user.kycStatus];
+  const badge = kycBadge(user);
+  const kyc = KYC_CHIP[badge.tone];
 
   return (
     <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm" aria-label="Identity">
@@ -146,11 +148,11 @@ export function IdentityCard({ onOpenKyc }: { onOpenKyc: () => void }) {
         <button
           type="button"
           data-testid="profile-kyc"
-          onClick={onOpenKyc}
+          onClick={openKycModal}
           className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-slate-900 ${kyc.className}`}
         >
           <kyc.Icon className="h-3.5 w-3.5" aria-hidden />
-          {kyc.label}
+          {badge.label}
         </button>
 
         {user.role === "admin" && (

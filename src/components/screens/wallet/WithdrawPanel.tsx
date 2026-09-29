@@ -2,12 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { AlertCircle, Check, Clock } from "lucide-react";
+import { AlertCircle, Check, Clock, ShieldCheck } from "lucide-react";
+import { KycGate } from "@/components/kyc/KycGate";
 import { NetworkPicker } from "@/components/screens/wallet/NetworkPicker";
 import { WithdrawConfirmSheet, type WithdrawDraft } from "@/components/screens/wallet/WithdrawConfirmSheet";
 import { AmountField } from "@/components/ui/AmountField";
 import { floor6, parseAmountInput, toInputText } from "@/lib/amount";
 import { formatAmount, formatAmountFlexible } from "@/lib/format";
+import { useNow } from "@/lib/hooks";
+import { canWithdraw, dailyLimitFor, remainingToday, tierDef } from "@/lib/kyc";
 import { useAppStore } from "@/lib/store";
 import {
   MIN_WITHDRAWAL,
@@ -26,10 +29,23 @@ const TAP = { scale: 0.96 } as const;
 const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 const NAV_DELAY_MS = 260;
 
+/** Withdrawals need at least Level 1; below that the security gate takes the form's place. */
 export function WithdrawPanel() {
+  const tier = useAppStore((s) => s.user.kycTier);
+  return canWithdraw(tier) ? <WithdrawForm /> : <KycGate />;
+}
+
+function WithdrawForm() {
   const savedAddress = useAppStore((s) => s.user.payoutAddress);
   const available = useAppStore((s) => s.balances.available);
+  const tier = useAppStore((s) => s.user.kycTier);
+  const transactions = useAppStore((s) => s.transactions);
   const setWalletSection = useAppStore((s) => s.setWalletSection);
+  const openKycModal = useAppStore((s) => s.openKycModal);
+  const now = useNow(30_000);
+  const limit = dailyLimitFor(tier);
+  const remaining = remainingToday(tier, transactions, now);
+  const used = limit === null || remaining === null ? 0 : Math.max(0, limit - remaining);
 
   const [address, setAddress] = useState(savedAddress ?? "");
   const [network, setNetwork] = useState<PaymentNetwork>(() => defaultNetworkFor(savedAddress ?? "") ?? "trc20");
@@ -52,8 +68,11 @@ export function WithdrawPanel() {
     if (amount <= 0) amountProblem = "Enter an amount greater than 0.";
     else if (amount < MIN_WITHDRAWAL) amountProblem = `Minimum withdrawal is ${formatAmount(MIN_WITHDRAWAL)} USDT.`;
     else if (amount > available) amountProblem = `Insufficient available balance (${formatAmountFlexible(available)} USDT).`;
+    else if (remaining !== null && amount > remaining)
+      amountProblem = `Exceeds your remaining daily limit (${formatAmountFlexible(remaining)} USDT).`;
   }
   const fundsIssue = amount !== null && amount > available;
+  const limitIssue = amount !== null && !fundsIssue && remaining !== null && amount > remaining;
   const canReview = amount !== null && amountProblem === null && addressValid;
   const shownAmount = amount !== null && amount > 0 ? amount : 0;
   const net = Math.max(0, Math.round((shownAmount - WITHDRAWAL_FEE) * 1e6) / 1e6);
@@ -66,7 +85,10 @@ export function WithdrawPanel() {
     else if (guess === "evm" && network === "trc20") setNetwork("bep20");
   };
 
-  const chipValue = (pct: number) => floor6(pct === 100 ? available : (available * pct) / 100);
+  const chipValue = (pct: number) => {
+    const target = floor6(pct === 100 ? available : (available * pct) / 100);
+    return remaining === null ? target : Math.min(target, floor6(remaining));
+  };
 
   const onSubmitted = () => {
     setDraft(null);
@@ -83,7 +105,18 @@ export function WithdrawPanel() {
   return (
     <div className="flex flex-col gap-4">
       <section className={`${CARD} p-5`} aria-label="Payout destination">
-        <h2 className="text-sm font-semibold">Payout destination</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">Payout destination</h2>
+          <button
+            type="button"
+            onClick={openKycModal}
+            data-testid="wallet-kyc-badge"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
+          >
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
+            Verified Level {tier}
+          </button>
+        </div>
         <div className="mt-3">
           <NetworkPicker name="withdraw-network" value={network} onChange={setNetwork} />
         </div>
@@ -194,8 +227,63 @@ export function WithdrawPanel() {
                 Deposit
               </button>
             )}
+            {limitIssue && (
+              <button
+                type="button"
+                onClick={openKycModal}
+                data-testid="raise-limit"
+                className="shrink-0 font-semibold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+              >
+                Raise limit
+              </button>
+            )}
           </p>
         )}
+
+        <div data-testid="limit-meter" className="mt-4 rounded-2xl bg-slate-50 px-3.5 py-3">
+          {limit === null ? (
+            <p className="flex items-center gap-2 text-xs font-medium text-slate-700">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" aria-hidden />
+              Unlimited daily withdrawals · {tierDef(tier).name}
+            </p>
+          ) : (
+            <>
+              <div className="flex items-baseline justify-between gap-2 text-xs">
+                <span className="font-medium text-slate-700">Daily limit</span>
+                <span className="font-mono tabular-nums text-slate-500">
+                  <span data-testid="limit-used">{formatAmount(used)}</span> / {formatAmount(limit)} USDT
+                </span>
+              </div>
+              <div
+                role="progressbar"
+                aria-label="Daily withdrawal limit used"
+                aria-valuemin={0}
+                aria-valuemax={limit}
+                aria-valuenow={Math.round(used)}
+                className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200/70"
+              >
+                <div
+                  className={`h-full rounded-full transition-[width] duration-300 ${used >= limit ? "bg-rose-500" : used / limit > 0.8 ? "bg-amber-500" : "bg-slate-900"}`}
+                  style={{ width: `${Math.min(100, (used / limit) * 100)}%` }}
+                />
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                <span>
+                  Remaining today <span data-testid="limit-remaining" className="font-mono font-medium tabular-nums text-slate-700">{formatAmount(remaining ?? 0)}</span> USDT · resets 00:00 UTC
+                </span>
+                {tier === 1 && (
+                  <button
+                    type="button"
+                    onClick={openKycModal}
+                    className="shrink-0 rounded-md font-semibold text-slate-700 underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
+                  >
+                    Upgrade
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
 
         <dl className="mt-4 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-100" aria-label="Fee and settlement breakdown">
           {breakdown.map(([label, value]) => (
