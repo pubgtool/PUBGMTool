@@ -21,7 +21,7 @@ export default async function LegalPage({ params }: { params: Params }) {
   if (!doc) notFound();
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-10">
+    <main className="flex-1 px-4 py-8">
       <Link href="/" className="text-sm text-slate-500 hover:text-ink">← Back</Link>
       <h1 className="mt-4 text-2xl font-semibold tracking-tight">{doc.title}</h1>
       <p className="mt-1 text-xs text-slate-500">Version {doc.version}</p>

@@ -1,11 +1,7 @@
-import { BPS } from "@/config/protocol";
-
 const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 0,
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
 });
 
-export const formatUsd = (n: number) => usd.format(n);
-
-export const formatApy = (bps: number) => `${(bps / (BPS / 100)).toFixed(2)}%`;
+/** Formats a USDT amount, e.g. 1,234.50 USDT. */
+export const formatUsdt = (n: number) => `${usd.format(n)} USDT`;
