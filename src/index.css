@@ -199,3 +199,25 @@ input[type='range']:active::-moz-range-thumb {
   font-family: var(--font-display);
   letter-spacing: -0.022em;
 }
+
+/* Visible keyboard focus on dark surfaces */
+:focus-visible {
+  outline: 2px solid rgb(var(--module-accent));
+  outline-offset: 2px;
+}
+
+/* Keep fixed bottom bars out of printed setups */
+@media print {
+  .fixed {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

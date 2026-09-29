@@ -175,6 +175,9 @@ export const PROBLEM_OPTIONS: { value: ProblemId; labelKey: string }[] = [
   { value: 'audio_unclear', labelKey: 'wizard.problems.audio_unclear' },
 ];
 
+// Drafts keep an interrupted wizard run resumable across reloads.
+export const WIZARD_DRAFT_KEY = 'pubgm.wizard.draft';
+
 // Default starting answers used by Wizard before user makes choices.
 export const DEFAULT_ANSWERS: WizardAnswers = {
   device: 'iphone_13_pro',

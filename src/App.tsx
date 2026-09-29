@@ -25,7 +25,7 @@ import { Landing } from './setup/Landing';
 import { Wizard } from './setup/Wizard';
 import { SetupResultView } from './setup/SetupResult';
 import { generateSetup, type WizardAnswers, type SetupResult } from './setup/generator';
-import { DEFAULT_ANSWERS } from './setup/wizardConfig';
+import { DEFAULT_ANSWERS, WIZARD_DRAFT_KEY } from './setup/wizardConfig';
 
 const SensitivityBuilder = lazy(() => import('./modules/SensitivityBuilder'));
 const HudLayoutGenerator = lazy(() => import('./modules/HudLayoutGenerator'));
@@ -105,19 +105,26 @@ export default function App() {
       const data = params.get('setup');
       if (data) {
         try {
-          const decoded = JSON.parse(decodeURIComponent(atob(data))) as WizardAnswers;
+          const decoded = JSON.parse(
+            decodeURIComponent(atob(data)),
+          ) as WizardAnswers;
+          if (!isValidAnswers(decoded)) throw new Error('bad setup payload');
           // Stash for first render
-          window.localStorage.setItem(
-            'pubgm.setup.answers',
-            JSON.stringify(decoded),
-          );
+          try {
+            window.localStorage.setItem(
+              'pubgm.setup.answers',
+              JSON.stringify(decoded),
+            );
+          } catch {
+            // ignore quota / privacy mode failures
+          }
           // Strip query
           const url = new URL(window.location.href);
           url.searchParams.delete('setup');
           window.history.replaceState({}, '', url.toString());
           return 'result';
         } catch {
-          // ignore
+          // ignore malformed share links and fall through to landing
         }
       }
     }
@@ -152,6 +159,11 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   }
   function handleRestart() {
+    try {
+      window.localStorage.removeItem(WIZARD_DRAFT_KEY);
+    } catch {
+      // ignore
+    }
     setSavedAnswers(null);
     setView('wizard');
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
@@ -216,6 +228,25 @@ export default function App() {
     </I18nContext.Provider>
   );
 }
+
+  // Shared setup links are user input — validate the shape before trusting it.
+  function isValidAnswers(v: unknown): v is WizardAnswers {
+    if (!v || typeof v !== 'object') return false;
+    const a = v as Record<string, unknown>;
+    return (
+      typeof a.device === 'string' &&
+      typeof a.tier === 'string' &&
+      typeof a.fps === 'string' &&
+      typeof a.refresh === 'number' &&
+      typeof a.playstyle === 'string' &&
+      typeof a.fingers === 'number' &&
+      typeof a.hand === 'string' &&
+      typeof a.gyroMode === 'string' &&
+      typeof a.adsMode === 'string' &&
+      Array.isArray(a.weapons) &&
+      Array.isArray(a.problems)
+    );
+  }
 
 function BrandShell({ children }: { children: React.ReactNode }) {
   const moduleStyle = {

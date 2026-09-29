@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   Crosshair,
   Settings as SettingsIcon,
@@ -13,8 +14,13 @@ import {
   Layers,
   RotateCw,
   Move,
+  Copy,
+  Link2,
+  FileJson,
+  Printer,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { copyToClipboard } from '../utils/share';
 import { Card, Button, Badge } from '../components/UI';
 import { SCOPES, type ScopeKey } from '../data/sensitivity';
 import type { SetupResult } from './generator';
@@ -30,7 +36,22 @@ export function SetupResultView({
   onTools: () => void;
 }) {
   const { t, lang } = useI18n();
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimer = useRef<number | null>(null);
   const archetypeKey = `result.archetype.${result.archetype}`;
+
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
+
+  function flash(msg: string) {
+    setNotice(msg);
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 2600);
+  }
 
   const deviceLabel =
     DEVICE_OPTIONS.find((d) => d.id === result.answers.device)?.label ??
@@ -46,6 +67,8 @@ export function SetupResultView({
       `Device: ${deviceLabel}`,
       `Style: ${a.playstyle} · Fingers: ${a.fingers} · Gyro: ${a.gyroMode}`,
       `Score: ${result.score}/100`,
+      `Graphics: ${result.graphics.quality} / ${result.graphics.frameRate} / ${result.graphics.style}`,
+      `HUD: ${result.hudLayout}`,
       ``,
       `▼ Camera (Free Look)`,
       fmt(s.camera),
@@ -58,20 +81,37 @@ export function SetupResultView({
     ].join('\n');
   }
 
-  function copyText() {
-    void navigator.clipboard.writeText(shareText());
+  function sensRow(row: Record<ScopeKey, number>): string {
+    return SCOPES.map((sc) => `${sc.label}: ${row[sc.key]}`).join('\n');
   }
 
-  function shareLink() {
-    const data = btoa(
-      encodeURIComponent(JSON.stringify(result.answers)),
+  function copyColumn(kind: 'camera' | 'ads' | 'gyro') {
+    const title = kind === 'camera' ? 'Camera' : kind === 'ads' ? 'ADS' : 'Gyroscope';
+    void copyToClipboard([`\u25bc ${title}`, sensRow(result.sensitivity[kind])].join('\n')).then(
+      (ok) => flash(t(ok ? 'result.export.copied' : 'result.export.copyFailed')),
     );
+  }
+
+  function copyText() {
+    void copyToClipboard(shareText()).then((ok) =>
+      flash(t(ok ? 'result.export.copied' : 'result.export.copyFailed')),
+    );
+  }
+
+  async function shareLink() {
+    const data = btoa(encodeURIComponent(JSON.stringify(result.answers)));
     const url = `${window.location.origin}${window.location.pathname}?setup=${data}`;
     if (navigator.share) {
-      void navigator.share({ title: 'My PUBGM Setup', url });
-    } else {
-      void navigator.clipboard.writeText(url);
+      try {
+        await navigator.share({ title: 'My PUBGM Setup', url });
+        return;
+      } catch (err) {
+        // User dismissed the sheet — stay silent; other errors fall back to copy.
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+      }
     }
+    const ok = await copyToClipboard(url);
+    flash(t(ok ? 'result.export.copied' : 'result.export.copyFailed'));
   }
 
   function exportJson() {
@@ -82,12 +122,14 @@ export function SetupResultView({
     const a = document.createElement('a');
     a.href = url;
     a.download = 'pubgm-setup.json';
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(url);
   }
 
   return (
-    <div className="space-y-4 px-4 pb-32 pt-4">
+    <div className="space-y-4 px-4 pb-32 pt-4 print:pb-0">
       {/* Hero */}
       <div className="hero-grad pop-in relative overflow-hidden rounded-3xl p-5 shadow-[0_18px_48px_-12px_rgb(var(--module-accent)/0.55)]">
         <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
@@ -207,6 +249,15 @@ export function SetupResultView({
           </span>
         }
         subtitle={t('result.sens.camera.desc')}
+        right={
+          <button
+            onClick={() => copyColumn('camera')}
+            aria-label={t('result.sens.copy')}
+            className="grid h-9 w-9 place-items-center rounded-full border border-line bg-panel-soft/60 text-text-soft hover:text-text"
+          >
+            <Copy className="h-4 w-4" strokeWidth={2.2} />
+          </button>
+        }
       >
         <SensTable values={result.sensitivity.camera} />
       </Card>
@@ -219,6 +270,15 @@ export function SetupResultView({
           </span>
         }
         subtitle={t('result.sens.ads.desc')}
+        right={
+          <button
+            onClick={() => copyColumn('ads')}
+            aria-label={t('result.sens.copy')}
+            className="grid h-9 w-9 place-items-center rounded-full border border-line bg-panel-soft/60 text-text-soft hover:text-text"
+          >
+            <Copy className="h-4 w-4" strokeWidth={2.2} />
+          </button>
+        }
       >
         <SensTable values={result.sensitivity.ads} />
       </Card>
@@ -231,8 +291,20 @@ export function SetupResultView({
           </span>
         }
         subtitle={t('result.sens.gyro.desc')}
+        right={
+          <button
+            onClick={() => copyColumn('gyro')}
+            aria-label={t('result.sens.copy')}
+            className="grid h-9 w-9 place-items-center rounded-full border border-line bg-panel-soft/60 text-text-soft hover:text-text"
+          >
+            <Copy className="h-4 w-4" strokeWidth={2.2} />
+          </button>
+        }
       >
-        <SensTable values={result.sensitivity.gyro} />
+        <SensTable
+          values={result.sensitivity.gyro}
+          emptyNote={t('result.sens.gyro.off')}
+        />
       </Card>
 
       {/* 7. HUD */}
@@ -255,11 +327,15 @@ export function SetupResultView({
         </div>
         <button
           className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-module hover:opacity-80"
-          onClick={() =>
-            window.dispatchEvent(
-              new CustomEvent('pubgm:nav', { detail: { tab: 'hud' } }),
-            )
-          }
+          onClick={() => {
+            // ToolsShell mounts after the view switch, so dispatch after it listens.
+            onTools();
+            window.setTimeout(() => {
+              window.dispatchEvent(
+                new CustomEvent('pubgm:nav', { detail: { tab: 'hud' } }),
+              );
+            }, 60);
+          }}
         >
           {t('result.hud.openModule')}
         </button>
@@ -408,6 +484,7 @@ export function SetupResultView({
         </ol>
       </Card>
 
+      <div className="print:hidden">
       {/* 12. Export */}
       <Card
         title={
@@ -420,12 +497,29 @@ export function SetupResultView({
       >
         <div className="grid grid-cols-2 gap-2">
           <Button variant="primary" onClick={shareLink}>
-            <Share2 className="h-4 w-4" strokeWidth={2.5} />
+            <Link2 className="h-4 w-4" strokeWidth={2.5} />
             {t('result.export.share')}
           </Button>
-          <Button onClick={copyText}>{t('result.export.copy')}</Button>
-          <Button onClick={exportJson}>{t('result.export.json')}</Button>
-          <Button onClick={() => window.print()}>{t('result.export.print')}</Button>
+          <Button onClick={copyText}>
+            <Copy className="h-4 w-4" strokeWidth={2.5} />
+            {t('result.export.copy')}
+          </Button>
+          <Button onClick={exportJson}>
+            <FileJson className="h-4 w-4" strokeWidth={2.5} />
+            {t('result.export.json')}
+          </Button>
+          <Button onClick={() => window.print()}>
+            <Printer className="h-4 w-4" strokeWidth={2.5} />
+            {t('result.export.print')}
+          </Button>
+        </div>
+        <div aria-live="polite">
+          {notice && (
+            <div className="mt-2 flex items-center gap-2 rounded-2xl border border-good/30 bg-good/10 px-3.5 py-2.5 text-[13px] font-semibold text-good">
+              <Check className="h-4 w-4 shrink-0" strokeWidth={2.5} />
+              {notice}
+            </div>
+          )}
         </div>
       </Card>
 
@@ -438,6 +532,7 @@ export function SetupResultView({
         <Button variant="default" onClick={onTools}>
           {t('result.tools')}
         </Button>
+      </div>
       </div>
     </div>
   );
@@ -481,7 +576,20 @@ function SettingTile({
   );
 }
 
-function SensTable({ values }: { values: Record<ScopeKey, number> }) {
+function SensTable({
+  values,
+  emptyNote,
+}: {
+  values: Record<ScopeKey, number>;
+  emptyNote?: string;
+}) {
+  if (SCOPES.every((s) => !values[s.key])) {
+    return (
+      <div className="rounded-2xl border border-line bg-panel-soft/60 p-4 text-[13px] text-text-soft">
+        {emptyNote ?? '\u2014'}
+      </div>
+    );
+  }
   return (
     <div className="overflow-hidden rounded-2xl border border-line">
       {SCOPES.map((s, i) => (

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, ArrowLeft, Check, X } from 'lucide-react';
 import { useI18n } from '../i18n';
 import {
@@ -15,9 +15,39 @@ import {
   WEAPON_OPTIONS,
   PROBLEM_OPTIONS,
   DEFAULT_ANSWERS,
+  WIZARD_DRAFT_KEY,
   type StepId,
 } from './wizardConfig';
 import type { WizardAnswers, WeaponId, ProblemId } from './generator';
+
+function readDraftAnswers(fallback: WizardAnswers): WizardAnswers {
+  try {
+    const raw = window.localStorage.getItem(WIZARD_DRAFT_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { answers?: unknown };
+    if (!parsed || typeof parsed.answers !== 'object' || parsed.answers === null)
+      return fallback;
+    return { ...fallback, ...(parsed.answers as Partial<WizardAnswers>) };
+  } catch {
+    return fallback;
+  }
+}
+
+function readDraftStep(): number {
+  try {
+    const raw = window.localStorage.getItem(WIZARD_DRAFT_KEY);
+    if (!raw) return 0;
+    const parsed = JSON.parse(raw) as { stepIndex?: unknown };
+    return typeof parsed.stepIndex === 'number' &&
+      parsed.stepIndex >= 0 &&
+      parsed.stepIndex < STEP_ORDER.length
+      ? parsed.stepIndex
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
 
 export function Wizard({
   initial,
@@ -29,24 +59,91 @@ export function Wizard({
   onFinish: (a: WizardAnswers) => void;
 }) {
   const { t } = useI18n();
-  const [answers, setAnswers] = useState<WizardAnswers>(initial ?? DEFAULT_ANSWERS);
-  const [stepIndex, setStepIndex] = useState(0);
+  const [answers, setAnswers] = useState<WizardAnswers>(
+    () => readDraftAnswers(initial ?? DEFAULT_ANSWERS),
+  );
+  const [stepIndex, setStepIndex] = useState(() => readDraftStep());
+  const [confirmExit, setConfirmExit] = useState(false);
+  const advanceTimer = useRef<number | null>(null);
   const stepId = STEP_ORDER[stepIndex];
   const isLast = stepIndex === STEP_ORDER.length - 1;
   const progress = ((stepIndex + 1) / STEP_ORDER.length) * 100;
+  // Weapons needs an explicit pick; problems is optional (skippable).
+  const canNext = stepId === 'weapons' ? answers.weapons.length > 0 : true;
+
+  // Persist the draft so an interrupted run resumes where it left off.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        WIZARD_DRAFT_KEY,
+        JSON.stringify({ answers, stepIndex }),
+      );
+    } catch {
+      // ignore quota / privacy mode failures
+    }
+  }, [answers, stepIndex]);
+
+  // Keep the question visible when the step changes.
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+  }, [stepIndex]);
+
+  useEffect(
+    () => () => {
+      if (advanceTimer.current) window.clearTimeout(advanceTimer.current);
+    },
+    [],
+  );
 
   function update<K extends keyof WizardAnswers>(key: K, value: WizardAnswers[K]) {
     setAnswers((a) => ({ ...a, [key]: value }));
   }
 
+  // Single-choice steps commit + auto-advance so a tap never needs a second one.
+  function chooseAndNext(patch: Partial<WizardAnswers>) {
+    setAnswers((a) => ({ ...a, ...patch }));
+    if (advanceTimer.current) window.clearTimeout(advanceTimer.current);
+    advanceTimer.current = window.setTimeout(() => {
+      setStepIndex((i) => Math.min(i + 1, STEP_ORDER.length - 1));
+    }, 180);
+  }
+
+  function clearDraft() {
+    try {
+      window.localStorage.removeItem(WIZARD_DRAFT_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
+  function finish(a: WizardAnswers) {
+    clearDraft();
+    onFinish(a);
+  }
+
   function next() {
-    if (isLast) onFinish(answers);
+    if (!canNext) return;
+    if (isLast) finish(answers);
     else setStepIndex((i) => i + 1);
   }
   function back() {
-    if (stepIndex === 0) onCancel();
+    if (advanceTimer.current) window.clearTimeout(advanceTimer.current);
+    if (stepIndex === 0) requestExit();
     else setStepIndex((i) => i - 1);
   }
+
+  const dirty =
+    JSON.stringify(answers) !== JSON.stringify(initial ?? DEFAULT_ANSWERS);
+
+  function requestExit() {
+    if (dirty) setConfirmExit(true);
+    else onCancel();
+  }
+
+  function discardAndExit() {
+    clearDraft();
+    onCancel();
+   }
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -54,8 +151,8 @@ export function Wizard({
       <header className="sticky top-0 z-20 bg-bg/95 px-4 pb-3 pt-4 backdrop-blur">
         <div className="flex items-center justify-between gap-3">
           <button
-            onClick={onCancel}
-            aria-label="Close"
+            onClick={requestExit}
+            aria-label={t('wizard.close')}
             className="grid h-9 w-9 place-items-center rounded-full border border-line bg-panel/80 text-text-soft hover:text-text"
           >
             <X className="h-4 w-4" strokeWidth={2.4} />
@@ -88,6 +185,7 @@ export function Wizard({
             stepId={stepId}
             answers={answers}
             update={update}
+            choose={chooseAndNext}
           />
         </div>
       </main>
@@ -104,14 +202,55 @@ export function Wizard({
           <ArrowLeft className="h-4 w-4" strokeWidth={2.5} />
           <span>{t('wizard.back')}</span>
         </button>
+        {stepId === 'problems' && answers.problems.length === 0 && (
+          <button
+            onClick={() => finish(answers)}
+            className="pointer-events-auto inline-flex h-12 items-center justify-center rounded-2xl border border-line bg-panel/95 px-4 text-[13.5px] font-bold text-text-soft backdrop-blur-xl transition hover:text-text active:scale-[0.97]"
+          >
+            {t('wizard.skip')}
+          </button>
+        )}
         <button
           onClick={next}
-          className="pointer-events-auto hero-grad inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl text-[14.5px] font-bold text-white shadow-[0_10px_30px_-8px_rgb(var(--module-accent)/0.7)] active:scale-[0.97]"
+          disabled={!canNext}
+          className="pointer-events-auto hero-grad inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl text-[14.5px] font-bold text-white shadow-[0_10px_30px_-8px_rgb(var(--module-accent)/0.7)] transition active:scale-[0.97] disabled:opacity-40 disabled:shadow-none"
         >
           <span>{isLast ? t('wizard.finish') : t('wizard.next')}</span>
           <ArrowRight className="h-4 w-4" strokeWidth={2.6} />
         </button>
       </div>
+
+      {confirmExit && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 px-6"
+          role="alertdialog"
+          aria-modal="true"
+          aria-label={t('wizard.exit.title')}
+        >
+          <div className="w-full max-w-[340px] rounded-3xl border border-line bg-panel p-5">
+            <h2 className="font-display text-[17px] font-bold text-text">
+              {t('wizard.exit.title')}
+            </h2>
+            <p className="mt-1.5 text-[13.5px] leading-relaxed text-text-soft">
+              {t('wizard.exit.body')}
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                onClick={discardAndExit}
+                className="inline-flex h-11 items-center justify-center rounded-2xl border border-bad/30 bg-bad/15 px-3 text-[13.5px] font-bold text-bad transition active:scale-[0.97]"
+              >
+                {t('wizard.exit.discard')}
+              </button>
+              <button
+                onClick={() => setConfirmExit(false)}
+                className="hero-grad inline-flex h-11 items-center justify-center rounded-2xl px-3 text-[13.5px] font-bold text-white transition active:scale-[0.97]"
+              >
+                {t('wizard.exit.keep')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -120,10 +259,12 @@ function Step({
   stepId,
   answers,
   update,
+  choose,
 }: {
   stepId: StepId;
   answers: WizardAnswers;
   update: <K extends keyof WizardAnswers>(key: K, value: WizardAnswers[K]) => void;
+  choose: (patch: Partial<WizardAnswers>) => void;
 }) {
   const { t } = useI18n();
 
@@ -136,11 +277,9 @@ function Step({
             label={d.label}
             sublabel={`${d.tier} · ${d.refresh} Hz`}
             active={answers.device === d.id}
-            onClick={() => {
-              update('device', d.id);
-              update('tier', d.tier);
-              update('refresh', d.refresh);
-            }}
+            onClick={() =>
+              choose({ device: d.id, tier: d.tier, refresh: d.refresh })
+            }
           />
         ))}
       </OptionList>
@@ -155,7 +294,7 @@ function Step({
             key={o.value}
             label={t(o.labelKey)}
             active={answers.refresh === o.value}
-            onClick={() => update('refresh', o.value)}
+            onClick={() => choose({ refresh: o.value })}
           />
         ))}
       </OptionList>
@@ -171,7 +310,7 @@ function Step({
             label={t(o.labelKey)}
             sublabel={t(o.descKey)}
             active={answers.fps === o.value}
-            onClick={() => update('fps', o.value)}
+            onClick={() => choose({ fps: o.value })}
           />
         ))}
       </OptionList>
@@ -187,7 +326,7 @@ function Step({
             label={t(o.labelKey)}
             sublabel={t(o.descKey)}
             active={answers.tier === o.value}
-            onClick={() => update('tier', o.value)}
+            onClick={() => choose({ tier: o.value })}
           />
         ))}
       </OptionList>
@@ -203,7 +342,7 @@ function Step({
             label={t(o.labelKey)}
             sublabel={t(o.descKey)}
             active={answers.playstyle === o.value}
-            onClick={() => update('playstyle', o.value)}
+            onClick={() => choose({ playstyle: o.value })}
           />
         ))}
       </OptionList>
@@ -219,7 +358,7 @@ function Step({
             label={t(o.labelKey)}
             sublabel={t(o.descKey)}
             active={answers.fingers === o.value}
-            onClick={() => update('fingers', o.value)}
+            onClick={() => choose({ fingers: o.value })}
           />
         ))}
       </OptionList>
@@ -234,7 +373,7 @@ function Step({
             key={o.value}
             label={t(o.labelKey)}
             active={answers.hand === o.value}
-            onClick={() => update('hand', o.value)}
+            onClick={() => choose({ hand: o.value })}
           />
         ))}
       </OptionList>
@@ -250,7 +389,7 @@ function Step({
             label={t(o.labelKey)}
             sublabel={t(o.descKey)}
             active={answers.gyroMode === o.value}
-            onClick={() => update('gyroMode', o.value)}
+            onClick={() => choose({ gyroMode: o.value })}
           />
         ))}
       </OptionList>
@@ -266,7 +405,7 @@ function Step({
             label={t(o.labelKey)}
             sublabel={t(o.descKey)}
             active={answers.adsMode === o.value}
-            onClick={() => update('adsMode', o.value)}
+            onClick={() => choose({ adsMode: o.value })}
           />
         ))}
       </OptionList>
@@ -384,6 +523,7 @@ function OptionRow({
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3.5 text-left transition active:scale-[0.98] ${
         active
           ? 'hero-grad border-transparent text-white shadow-[0_8px_24px_-8px_rgb(var(--module-accent)/0.6)]'
