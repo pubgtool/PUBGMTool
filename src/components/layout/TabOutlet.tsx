@@ -3,6 +3,7 @@
 import { useLayoutEffect } from "react";
 import { NAV_ITEMS } from "@/components/layout/BottomNav";
 import { MainView } from "@/components/screens/MainView";
+import { ProfileView } from "@/components/screens/ProfileView";
 import { VaultsView } from "@/components/screens/VaultsView";
 import { WalletView } from "@/components/screens/WalletView";
 import { selectUnreadCount, useAppStore } from "@/lib/store";
@@ -11,18 +12,10 @@ import { selectUnreadCount, useAppStore } from "@/lib/store";
 function PlaceholderView() {
   const tab = useAppStore((s) => s.activeTab);
   const unread = useAppStore(selectUnreadCount);
-  const user = useAppStore((s) => s.user);
 
   const title = NAV_ITEMS.find((i) => i.tab === tab)?.label ?? "Main";
   const rows: Array<[string, string]> =
-    tab === "notifications"
-      ? [["Unread alerts", String(unread)]]
-      : tab === "profile"
-        ? [
-            ["Account", user.displayName],
-            ["KYC", user.kycStatus],
-          ]
-        : [["Status", "Coming soon"]];
+    tab === "notifications" ? [["Unread alerts", String(unread)]] : [["Status", "Coming soon"]];
 
   return (
     <main className="flex-1 px-4 pt-6">
@@ -51,5 +44,6 @@ export function TabOutlet() {
   if (tab === "main") return <MainView />;
   if (tab === "vaults") return <VaultsView />;
   if (tab === "wallet") return <WalletView />;
+  if (tab === "profile") return <ProfileView />;
   return <PlaceholderView />;
 }

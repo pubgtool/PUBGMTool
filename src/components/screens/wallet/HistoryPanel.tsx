@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   ChevronDown,
   Copy,
+  Gift,
   Layers,
   Receipt,
   SlidersHorizontal,
@@ -53,6 +54,7 @@ interface Meta {
 const META: Record<TransactionType, Meta> = {
   deposit: { title: "Deposit", Icon: ArrowDownLeft, tint: "bg-emerald-50 text-emerald-600", sign: "+" },
   withdraw: { title: "Withdrawal", Icon: ArrowUpRight, tint: "bg-orange-50 text-orange-600", sign: "-" },
+  commission: { title: "Referral Commission", Icon: Gift, tint: "bg-sky-50 text-sky-600", sign: "+" },
   earning: { title: "Daily Income", Icon: Sparkles, tint: "bg-violet-50 text-violet-600", sign: "+" },
   harvest: { title: "Income Harvested", Icon: Sparkles, tint: "bg-violet-50 text-violet-600", sign: "+" },
   stake: { title: "Plan Activated", Icon: Layers, tint: "bg-slate-100 text-slate-600", sign: "-" },

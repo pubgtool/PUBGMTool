@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { ENGINE, PERSISTENCE } from "@/config/protocol";
+import { ENGINE, PERSISTENCE, REFERRAL } from "@/config/protocol";
 import {
   MIN_DEPOSIT,
   MIN_WITHDRAWAL,
@@ -23,6 +23,7 @@ import type {
   Language,
   NotificationKind,
   PaymentNetwork,
+  SecuritySettings,
   Transaction,
   TransactionType,
   UserProfile,
@@ -46,6 +47,11 @@ const MAX_TRANSACTIONS = 200;
 const MAX_NOTIFICATIONS = 100;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SEED_TIME = "2026-09-29T00:00:00.000Z";
+/** Sandbox invitee deposits, cycled so simulated commissions are predictable. */
+const REFERRAL_SAMPLE_DEPOSITS = [100, 250, 500, 1_000] as const;
+
+const defaultSecurity = (): SecuritySettings => ({ twoFactor: false, paymentPin: false, pushAlerts: true });
+const emptyReferral = () => ({ invites: 0, commissionEarned: 0 });
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -101,6 +107,11 @@ export interface StoreActions {
   logout: () => void;
   updateKyc: () => ActionResult;
   updatePayoutAddress: (address: string) => ActionResult;
+  /** Sandbox: resolves a PENDING verification. */
+  reviewKyc: (decision: "VERIFIED" | "REJECTED") => ActionResult;
+  setSecurityPreference: (key: keyof SecuritySettings, value: boolean) => ActionResult;
+  /** Sandbox: registers a Tier 1 invite and credits its commission. */
+  simulateReferral: () => ActionResult;
 
   deposit: (amount: number, network?: PaymentNetwork) => ActionResult;
   withdraw: (amount: number, address: string, network?: PaymentNetwork) => ActionResult;
@@ -193,6 +204,8 @@ const GUEST_USER: UserProfile = {
   kycStatus: "NONE",
   payoutAddress: null,
   createdAt: SEED_TIME,
+  security: defaultSecurity(),
+  referral: emptyReferral(),
 };
 
 const emptyBalances = (): WalletBalances => ({
@@ -483,6 +496,8 @@ export const useAppStore = create<StoreState>()(
           kycStatus: "NONE",
           payoutAddress: null,
           createdAt: new Date(now).toISOString(),
+          security: defaultSecurity(),
+          referral: emptyReferral(),
         };
         const balances: WalletBalances = { ...emptyBalances(), trialVoucher: TRIAL_VOUCHER_AMOUNT };
         const transactions = [
@@ -569,6 +584,77 @@ export const useAppStore = create<StoreState>()(
           ),
         });
         return OK;
+      },
+
+      reviewKyc: (decision) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in first.");
+        if (s.user.kycStatus !== "PENDING") return fail("No verification is awaiting review.");
+        const approved = decision === "VERIFIED";
+        set({
+          user: { ...s.user, kycStatus: decision },
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "account",
+              title: approved ? "Identity verified" : "Verification rejected",
+              body: approved
+                ? "Your Level 1 verification was approved."
+                : "We couldn't verify your documents. You can submit them again.",
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      setSecurityPreference: (key, value) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to change security settings.");
+        if (!(key in s.user.security)) return fail("Unknown setting.");
+        if (s.user.security[key] === value) return OK;
+        const label = key === "twoFactor" ? "Two-factor authentication" : key === "paymentPin" ? "Payment PIN" : null;
+        set({
+          user: { ...s.user, security: { ...s.user.security, [key]: value } },
+          notifications: label
+            ? prependNotifications(
+                s.notifications,
+                makeNotification({
+                  kind: "account",
+                  title: `${label} ${value ? "enabled" : "disabled"}`,
+                  body: `${label} was turned ${value ? "on" : "off"} for your account.`,
+                }),
+              )
+            : s.notifications,
+        });
+        return OK;
+      },
+
+      simulateReferral: () => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to earn referral commission.");
+        const { invites, commissionEarned } = s.user.referral;
+        const invitee = REFERRAL_SAMPLE_DEPOSITS[invites % REFERRAL_SAMPLE_DEPOSITS.length] ?? 100;
+        const commission = round6((invitee * REFERRAL.tiers[0].ratePct) / 100);
+        const tx = makeTx("commission", commission, {
+          note: `Tier 1 · invitee deposit ${fmt(invitee)} USDT`,
+        });
+        set({
+          user: {
+            ...s.user,
+            referral: { invites: invites + 1, commissionEarned: round6(commissionEarned + commission) },
+          },
+          balances: { ...s.balances, available: s.balances.available + commission },
+          transactions: prependTx(s.transactions, tx),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Referral commission",
+              body: `${fmt(commission)} USDT credited from a new Tier 1 invite.`,
+            }),
+          ),
+        });
+        return okWith(tx.id);
       },
 
       /* ---------------- Wallet ---------------- */
@@ -946,14 +1032,29 @@ export const useAppStore = create<StoreState>()(
         // v1 -> v2: the "terminal" tab was renamed "main".
         if (version < 2 && state.activeTab === "terminal") state.activeTab = "main";
         // v2 -> v3: every transaction gained a status.
+        // Only touch keys that exist: a `undefined` here would override the defaults on merge.
         if (version < 3) {
-          const withStatus = (list: unknown) =>
-            Array.isArray(list) ? list.map((t) => ({ status: "COMPLETED", ...t })) : list;
-          state.transactions = withStatus(state.transactions);
+          const withStatus = (list: unknown[]) => list.map((t) => ({ status: "COMPLETED", ...(t as object) }));
+          if (Array.isArray(state.transactions)) state.transactions = withStatus(state.transactions);
           const accounts = state.accounts as Record<string, Record<string, unknown>> | undefined;
           if (accounts) {
             for (const account of Object.values(accounts)) {
-              account.transactions = withStatus(account.transactions);
+              if (Array.isArray(account.transactions)) account.transactions = withStatus(account.transactions);
+            }
+          }
+        }
+        // v3 -> v4: profiles gained security preferences and referral stats.
+        if (version < 4) {
+          const withProfileDefaults = (user: object) => ({
+            security: defaultSecurity(),
+            referral: emptyReferral(),
+            ...user,
+          });
+          if (state.user && typeof state.user === "object") state.user = withProfileDefaults(state.user);
+          const accounts = state.accounts as Record<string, Record<string, unknown>> | undefined;
+          if (accounts) {
+            for (const account of Object.values(accounts)) {
+              if (account.user && typeof account.user === "object") account.user = withProfileDefaults(account.user);
             }
           }
         }

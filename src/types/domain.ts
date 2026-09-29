@@ -10,6 +10,7 @@ export type TransactionStatus = "PENDING" | "COMPLETED";
 export type TransactionType =
   | "deposit"
   | "earning"
+  | "commission"
   | "stake"
   | "unstake"
   | "early_unstake"
@@ -55,6 +56,19 @@ export interface LegalDocument {
 
 export type KycStatus = "NONE" | "PENDING" | "VERIFIED" | "REJECTED";
 
+export type UserRole = "user" | "admin";
+
+export interface SecuritySettings {
+  twoFactor: boolean;
+  paymentPin: boolean;
+  pushAlerts: boolean;
+}
+
+export interface ReferralStats {
+  invites: number;
+  commissionEarned: Usd;
+}
+
 export interface UserProfile {
   id: string;
   email: string | null;
@@ -63,6 +77,10 @@ export interface UserProfile {
   kycStatus: KycStatus;
   payoutAddress: string | null;
   createdAt: IsoTimestamp;
+  /** Absent means "user". Nothing assigns "admin" yet. */
+  role?: UserRole;
+  security: SecuritySettings;
+  referral: ReferralStats;
 }
 
 export interface WalletBalances {
