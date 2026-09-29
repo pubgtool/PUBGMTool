@@ -1,7 +1,7 @@
 import { REFERRAL } from "@/config/protocol";
 
 /** FNV-1a: small, stable, dependency-free. Used only for display identifiers. */
-function fnv1a(text: string): number {
+export function fnv1a(text: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     hash ^= text.charCodeAt(i);

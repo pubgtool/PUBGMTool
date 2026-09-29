@@ -12,6 +12,7 @@ import {
   Flame,
   History,
   Layers,
+  Gift,
   ShieldAlert,
   ShieldCheck,
   Ticket,
@@ -21,6 +22,8 @@ import {
 } from "lucide-react";
 import { ENGINE } from "@/config/protocol";
 import { formatAmount, formatRate, formatSignedPct } from "@/lib/format";
+import { useNow } from "@/lib/hooks";
+import { summarizeRewards } from "@/lib/rewards";
 import { selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
 import type { VaultPosition, WalletSection } from "@/types/domain";
 
@@ -53,6 +56,7 @@ export function MainView() {
   const setFocusedTierId = useAppStore((s) => s.setFocusedTierId);
 
   const [hidden, setHidden] = useState(false);
+  const now = useNow(30_000);
 
   const active = useMemo(() => positions.filter((p) => p.status === "active"), [positions]);
   const openTiers = useMemo(() => tiers.filter((t) => t.isActive), [tiers]);
@@ -64,6 +68,17 @@ export function MainView() {
   const dayStartEquity = equity - balances.dailyAccrued;
   const dailyPct = dayStartEquity > 0 ? (balances.dailyAccrued / dayStartEquity) * 100 : 0;
   const mask = (value: string) => (hidden ? MASK : value);
+
+  const rewards = useMemo(() => summarizeRewards(user, positions, now), [user, positions, now]);
+  const rewardsReady = (rewards.checkInAvailable ? 1 : 0) + rewards.readyTasks;
+  const rewardsHint = user.isGuest
+    ? "Daily check-in, gift codes and missions"
+    : [
+        rewards.checkInAvailable ? "Daily check-in ready" : "Checked in today",
+        rewards.readyTasks > 0 ? `${rewards.readyTasks} ${rewards.readyTasks === 1 ? "bounty" : "bounties"} to claim` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
 
   const openWallet = (section: WalletSection) => {
     setWalletSection(section);
@@ -209,6 +224,36 @@ export function MainView() {
           </motion.button>
         ))}
       </section>
+
+      {/* Tasks & rewards */}
+      <motion.button
+        type="button"
+        whileTap={{ scale: 0.98 }}
+        transition={SPRING}
+        onClick={() => setActiveTab("tasks")}
+        data-testid="rewards-entry"
+        className="flex w-full items-center gap-3 rounded-3xl border border-amber-200/60 bg-gradient-to-r from-amber-50 to-orange-50 p-4 text-left shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+      >
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-amber-600 shadow-sm">
+          <Gift className="h-5 w-5" aria-hidden />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">Tasks &amp; Rewards</span>
+          <span data-testid="rewards-entry-hint" className="block truncate text-xs text-slate-600">
+            {rewardsHint}
+          </span>
+        </span>
+        {rewardsReady > 0 && (
+          <span
+            data-testid="rewards-entry-badge"
+            aria-label={`${rewardsReady} ready`}
+            className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-semibold leading-none tabular-nums text-white"
+          >
+            {rewardsReady}
+          </span>
+        )}
+        <ChevronRight className="h-4 w-4 shrink-0 text-amber-600" aria-hidden />
+      </motion.button>
 
       {/* Active allocations */}
       <section className={`${CARD} p-4`}>

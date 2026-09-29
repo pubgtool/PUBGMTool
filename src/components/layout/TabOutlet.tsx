@@ -4,6 +4,7 @@ import { useLayoutEffect } from "react";
 import { NAV_ITEMS } from "@/components/layout/BottomNav";
 import { MainView } from "@/components/screens/MainView";
 import { ProfileView } from "@/components/screens/ProfileView";
+import { TasksView } from "@/components/screens/TasksView";
 import { VaultsView } from "@/components/screens/VaultsView";
 import { WalletView } from "@/components/screens/WalletView";
 import { selectUnreadCount, useAppStore } from "@/lib/store";
@@ -45,5 +46,6 @@ export function TabOutlet() {
   if (tab === "vaults") return <VaultsView />;
   if (tab === "wallet") return <WalletView />;
   if (tab === "profile") return <ProfileView />;
+  if (tab === "tasks") return <TasksView />;
   return <PlaceholderView />;
 }

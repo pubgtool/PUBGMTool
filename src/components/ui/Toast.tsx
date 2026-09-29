@@ -64,10 +64,10 @@ export function ToastHost() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -12, scale: 0.95 }}
               transition={{ type: "spring", stiffness: 500, damping: 32, mass: 0.8 }}
-              className="flex max-w-full items-center gap-2 rounded-full border border-slate-800 bg-slate-950 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-slate-950/20"
+              className="flex max-w-full items-center gap-2 rounded-[22px] border border-slate-800 bg-slate-950 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-slate-950/20"
             >
               {ICONS[t.kind]}
-              <span className="truncate">{t.message}</span>
+              <span className="line-clamp-2 min-w-0 break-words">{t.message}</span>
             </motion.div>
           ))}
         </AnimatePresence>

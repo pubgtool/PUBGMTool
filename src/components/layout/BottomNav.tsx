@@ -39,7 +39,8 @@ export function BottomNav() {
     >
       <ul className="flex items-center justify-between">
         {NAV_ITEMS.map(({ tab, label, Icon }) => {
-          const active = tab === activeTab && pathname === "/";
+          const shown = activeTab === "tasks" ? "main" : activeTab;
+          const active = tab === shown && pathname === "/";
           return (
             <li key={tab}>
               <button

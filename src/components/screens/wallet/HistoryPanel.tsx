@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Copy,
   Gift,
+  Trophy,
   Layers,
   Receipt,
   SlidersHorizontal,
@@ -22,13 +23,14 @@ import { useAppStore } from "@/lib/store";
 import { getNetwork } from "@/lib/wallet";
 import type { Transaction, TransactionType } from "@/types/domain";
 
-type Filter = "all" | "deposits" | "withdrawals" | "earnings";
+type Filter = "all" | "deposits" | "withdrawals" | "earnings" | "rewards";
 
 const FILTERS: ReadonlyArray<{ id: Filter; label: string }> = [
   { id: "all", label: "All" },
   { id: "deposits", label: "Deposits" },
   { id: "withdrawals", label: "Withdrawals" },
   { id: "earnings", label: "VIP Earnings" },
+  { id: "rewards", label: "Rewards" },
 ];
 
 const PAGE_SIZE = 20;
@@ -54,6 +56,7 @@ interface Meta {
 const META: Record<TransactionType, Meta> = {
   deposit: { title: "Deposit", Icon: ArrowDownLeft, tint: "bg-emerald-50 text-emerald-600", sign: "+" },
   withdraw: { title: "Withdrawal", Icon: ArrowUpRight, tint: "bg-orange-50 text-orange-600", sign: "-" },
+  bounty: { title: "Reward Bounty", Icon: Trophy, tint: "bg-amber-50 text-amber-600", sign: "+" },
   commission: { title: "Referral Commission", Icon: Gift, tint: "bg-sky-50 text-sky-600", sign: "+" },
   earning: { title: "Daily Income", Icon: Sparkles, tint: "bg-violet-50 text-violet-600", sign: "+" },
   harvest: { title: "Income Harvested", Icon: Sparkles, tint: "bg-violet-50 text-violet-600", sign: "+" },
@@ -69,6 +72,7 @@ function matches(filter: Filter, tx: Transaction): boolean {
   if (filter === "all") return true;
   if (filter === "deposits") return tx.type === "deposit";
   if (filter === "withdrawals") return tx.type === "withdraw";
+  if (filter === "rewards") return tx.type === "bounty" || tx.type === "commission";
   return tx.type === "earning";
 }
 
@@ -181,6 +185,7 @@ export function HistoryPanel() {
     deposits: { text: "No deposits yet.", cta: "Make a deposit", onPress: () => setWalletSection("deposit") },
     withdrawals: { text: "No withdrawals yet.", cta: "Withdraw funds", onPress: () => setWalletSection("withdraw") },
     earnings: { text: "No VIP earnings yet.", cta: "Activate a VIP plan", onPress: () => setActiveTab("vaults") },
+    rewards: { text: "No rewards claimed yet.", cta: "Open Tasks & Rewards", onPress: () => setActiveTab("tasks") },
   };
 
   return (

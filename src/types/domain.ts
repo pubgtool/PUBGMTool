@@ -11,6 +11,7 @@ export type TransactionType =
   | "deposit"
   | "earning"
   | "commission"
+  | "bounty"
   | "stake"
   | "unstake"
   | "early_unstake"
@@ -69,6 +70,43 @@ export interface ReferralStats {
   commissionEarned: Usd;
 }
 
+export type TaskId = "daily-compute" | "telegram" | "invite";
+
+export interface TaskProgress {
+  /** Epoch ms when the user started the task. */
+  startedAt: number | null;
+  /** Reward locked in when the task was started. */
+  reward: Usd | null;
+  claimedAt: IsoTimestamp | null;
+}
+
+export interface CheckInState {
+  /** Consecutive-day count within the current 7-day cycle (1..7); 0 = never. */
+  streak: number;
+  /** UTC day (YYYY-MM-DD) of the last check-in. */
+  lastDay: string | null;
+  /** Completed 7-day cycles. */
+  cycles: number;
+}
+
+export interface RewardsState {
+  checkIn: CheckInState;
+  tasks: Partial<Record<TaskId, TaskProgress>>;
+  /** Lifetime check-in, mission and gift-code rewards. */
+  totalBounty: Usd;
+}
+
+export interface PromoCode {
+  code: string;
+  rewardUsdt: Usd;
+  maxClaims: number;
+  currentClaims: number;
+  expiresAt?: IsoTimestamp;
+  active: boolean;
+  /** User ids that already redeemed the code. */
+  claimedBy: string[];
+}
+
 export interface UserProfile {
   id: string;
   email: string | null;
@@ -81,6 +119,7 @@ export interface UserProfile {
   role?: UserRole;
   security: SecuritySettings;
   referral: ReferralStats;
+  rewards: RewardsState;
 }
 
 export interface WalletBalances {
@@ -136,6 +175,6 @@ export interface AppNotification {
   read: boolean;
 }
 
-export type AppTab = "main" | "vaults" | "wallet" | "notifications" | "profile" | "admin";
+export type AppTab = "main" | "vaults" | "wallet" | "notifications" | "profile" | "tasks" | "admin";
 export type Language = "en" | "ru";
 export type WalletSection = "deposit" | "withdraw" | "history";

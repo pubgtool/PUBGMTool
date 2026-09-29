@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { ENGINE, PERSISTENCE, REFERRAL } from "@/config/protocol";
+import { CHECK_IN_CYCLE, CHECK_IN_REWARDS, PROMO_RULES, getTaskDef, seedPromoCodes } from "@/config/rewards";
+import { checkInView, computeTaskBonus, mysteryBonus, normalizeCode, taskView } from "@/lib/rewards";
+import { utcDay } from "@/lib/time";
 import {
   MIN_DEPOSIT,
   MIN_WITHDRAWAL,
@@ -23,7 +26,10 @@ import type {
   Language,
   NotificationKind,
   PaymentNetwork,
+  PromoCode,
+  RewardsState,
   SecuritySettings,
+  TaskId,
   Transaction,
   TransactionType,
   UserProfile,
@@ -52,12 +58,29 @@ const REFERRAL_SAMPLE_DEPOSITS = [100, 250, 500, 1_000] as const;
 
 const defaultSecurity = (): SecuritySettings => ({ twoFactor: false, paymentPin: false, pushAlerts: true });
 const emptyReferral = () => ({ invites: 0, commissionEarned: 0 });
+const defaultRewards = (): RewardsState => ({
+  checkIn: { streak: 0, lastDay: null, cycles: 0 },
+  tasks: {},
+  totalBounty: 0,
+});
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
 export type ActionResult = { ok: true; id?: string } | { ok: false; error: string };
+
+/** Result of an action that credits a bounty; `amount` is what was paid. */
+export type RewardResult =
+  | { ok: true; id: string; amount: number; day?: number; mystery?: number }
+  | { ok: false; error: string };
+
+export type PromoInput = {
+  code: string;
+  rewardUsdt: number;
+  maxClaims: number;
+  expiresAt?: string | null;
+};
 
 export type TierInput = Pick<
   VipTier,
@@ -95,6 +118,8 @@ export interface StoreData {
   activeTab: AppTab;
   activeLanguage: Language;
   hasSeenAnnouncement: boolean;
+  /** Gift codes shared by every account on this device. */
+  promoCodes: PromoCode[];
   /** Transient navigation intent (not persisted): section the Wallet tab opens on. */
   walletSection: WalletSection;
   /** Transient navigation intent (not persisted): tier the Vaults tab highlights. */
@@ -126,6 +151,14 @@ export interface StoreActions {
   unstakePosition: (positionId: string) => ActionResult;
   tickYieldEngine: (now?: number) => void;
 
+  /** One per UTC day; consecutive days build a 7-day streak. */
+  checkIn: (now?: number) => RewardResult;
+  startTask: (id: TaskId, now?: number) => ActionResult;
+  claimTask: (id: TaskId, now?: number) => RewardResult;
+  claimPromoCode: (code: string, now?: number) => RewardResult;
+  /** Issues a gift code; intended for the admin matrix. */
+  createPromoCode: (input: PromoInput, now?: number) => ActionResult;
+
   pushNotification: (input: NotificationInput) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
@@ -145,12 +178,11 @@ export type StoreState = StoreData & StoreActions;
 /* ------------------------------------------------------------------ */
 
 const OK: ActionResult = { ok: true };
-const fail = (error: string): ActionResult => ({ ok: false, error });
+const fail = (error: string): { ok: false; error: string } => ({ ok: false, error });
 const okWith = (id: string): ActionResult => ({ ok: true, id });
 
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 6 });
-const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
 function uid(prefix: string): string {
@@ -192,6 +224,23 @@ const prependTx = (list: Transaction[], ...items: Transaction[]) =>
 const prependNotifications = (list: AppNotification[], ...items: AppNotification[]) =>
   [...items, ...list].slice(0, MAX_NOTIFICATIONS);
 
+/** Balance, ledger, notification and lifetime-bounty changes for one credited reward. */
+function bountyPatch(
+  s: StoreState,
+  rewards: RewardsState,
+  amount: Usd,
+  note: string,
+  notification: NotificationInput,
+): Partial<StoreState> {
+  const tx = makeTx("bounty", amount, { note });
+  return {
+    balances: { ...s.balances, available: s.balances.available + amount },
+    transactions: prependTx(s.transactions, tx),
+    notifications: prependNotifications(s.notifications, makeNotification(notification)),
+    user: { ...s.user, rewards: { ...rewards, totalBounty: round6(rewards.totalBounty + amount) } },
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Seed data                                                           */
 /* ------------------------------------------------------------------ */
@@ -206,6 +255,7 @@ const GUEST_USER: UserProfile = {
   createdAt: SEED_TIME,
   security: defaultSecurity(),
   referral: emptyReferral(),
+  rewards: defaultRewards(),
 };
 
 const emptyBalances = (): WalletBalances => ({
@@ -281,6 +331,7 @@ function createInitialData(): StoreData {
     activeTab: "main",
     activeLanguage: "en",
     hasSeenAnnouncement: false,
+    promoCodes: seedPromoCodes(),
     walletSection: "deposit",
     focusedTierId: null,
   };
@@ -438,6 +489,7 @@ const PERSISTED_KEYS = [
   "activeTab",
   "activeLanguage",
   "hasSeenAnnouncement",
+  "promoCodes",
 ] as const satisfies ReadonlyArray<keyof StoreData>;
 
 export const useAppStore = create<StoreState>()(
@@ -498,6 +550,7 @@ export const useAppStore = create<StoreState>()(
           createdAt: new Date(now).toISOString(),
           security: defaultSecurity(),
           referral: emptyReferral(),
+          rewards: defaultRewards(),
         };
         const balances: WalletBalances = { ...emptyBalances(), trialVoucher: TRIAL_VOUCHER_AMOUNT };
         const transactions = [
@@ -991,6 +1044,190 @@ export const useAppStore = create<StoreState>()(
         });
       },
 
+      /* ---------------- Rewards ---------------- */
+
+      checkIn: (now = Date.now()) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to check in.");
+        const { rewards } = s.user;
+        const view = checkInView(rewards.checkIn, now);
+        if (view.doneToday) return fail("Already checked in today. The next check-in opens at 00:00 UTC.");
+
+        const day = view.nextDay;
+        const milestone = day === CHECK_IN_CYCLE;
+        const base = CHECK_IN_REWARDS[day - 1] ?? 0;
+        const mystery = milestone ? mysteryBonus(s.user.id, rewards.checkIn.cycles) : 0;
+        const amount = round6(base + mystery);
+        const note = milestone
+          ? `Day ${day} check-in + mystery bonus`
+          : `Day ${day} check-in`;
+
+        const patch = bountyPatch(
+          s,
+          {
+            ...rewards,
+            checkIn: {
+              streak: day,
+              lastDay: utcDay(now),
+              cycles: milestone ? rewards.checkIn.cycles + 1 : rewards.checkIn.cycles,
+            },
+          },
+          amount,
+          note,
+          {
+            kind: "wallet",
+            title: milestone ? "7-day streak complete" : "Daily check-in claimed",
+            body: milestone
+              ? `${fmt(amount)} USDT credited: ${fmt(base)} USDT plus a ${fmt(mystery)} USDT mystery bonus.`
+              : `Day ${day}: ${fmt(amount)} USDT credited to your available balance.`,
+          },
+        );
+        set(patch);
+        return { ok: true, id: get().transactions[0]?.id ?? "", amount, day, ...(milestone && { mystery }) };
+      },
+
+      startTask: (id, now = Date.now()) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to start missions.");
+        const def = getTaskDef(id);
+        if (!def) return fail("Unknown mission.");
+        if (def.kind === "invite") return fail("This mission completes when your first invite signs up.");
+
+        const { rewards } = s.user;
+        const hasActivePlan = s.positions.some((p) => p.status === "active");
+        const view = taskView(def, rewards.tasks[id], {
+          now,
+          hasActivePlan,
+          invites: s.user.referral.invites,
+          computeReward: computeTaskBonus(s.positions),
+        });
+        if (view.status === "locked") return fail("Requires an active VIP plan.");
+        if (view.status === "claimed") return fail("Already completed.");
+        if (view.status !== "idle") return OK;
+
+        const reward = def.kind === "compute" ? computeTaskBonus(s.positions) : def.reward;
+        set({
+          user: {
+            ...s.user,
+            rewards: {
+              ...rewards,
+              tasks: { ...rewards.tasks, [id]: { startedAt: now, reward, claimedAt: null } },
+            },
+          },
+        });
+        return OK;
+      },
+
+      claimTask: (id, now = Date.now()) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to claim bounties.");
+        const def = getTaskDef(id);
+        if (!def) return fail("Unknown mission.");
+
+        const { rewards } = s.user;
+        const progress = rewards.tasks[id];
+        const view = taskView(def, progress, {
+          now,
+          hasActivePlan: s.positions.some((p) => p.status === "active"),
+          invites: s.user.referral.invites,
+          computeReward: computeTaskBonus(s.positions),
+        });
+        if (view.status === "claimed") return fail("Bounty already claimed.");
+        if (view.status === "locked") return fail("Requires an active VIP plan.");
+        if (view.status === "processing") return fail("Still processing. Try again in a moment.");
+        if (view.status !== "ready") return fail("Complete the mission first.");
+
+        const amount = round6(view.reward);
+        const patch = bountyPatch(
+          s,
+          {
+            ...rewards,
+            tasks: {
+              ...rewards.tasks,
+              [id]: {
+                startedAt: progress?.startedAt ?? null,
+                reward: amount,
+                claimedAt: new Date(now).toISOString(),
+              },
+            },
+          },
+          amount,
+          def.title,
+          {
+            kind: "wallet",
+            title: "Mission bounty claimed",
+            body: `${fmt(amount)} USDT credited for "${def.title}".`,
+          },
+        );
+        set(patch);
+        return { ok: true, id: get().transactions[0]?.id ?? "", amount };
+      },
+
+      claimPromoCode: (raw, now = Date.now()) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to redeem gift codes.");
+        const code = normalizeCode(raw);
+        if (!code) return fail("Enter a gift code.");
+
+        const promo = s.promoCodes.find((p) => p.code === code);
+        if (!promo) return fail("Invalid code");
+        if (!promo.active) return fail("Code is not active");
+        if (promo.expiresAt && Date.parse(promo.expiresAt) <= now) return fail("Code expired");
+        if (promo.claimedBy.includes(s.user.id)) return fail("Already redeemed by this UID");
+        if (promo.currentClaims >= promo.maxClaims) return fail("Claim limit reached");
+
+        const amount = round6(promo.rewardUsdt);
+        const patch = bountyPatch(s, s.user.rewards, amount, `Red envelope ${promo.code}`, {
+          kind: "wallet",
+          title: "Red envelope opened",
+          body: `${fmt(amount)} USDT credited from gift code ${promo.code}.`,
+        });
+        set({
+          ...patch,
+          promoCodes: s.promoCodes.map((p) =>
+            p.code === promo.code
+              ? { ...p, currentClaims: p.currentClaims + 1, claimedBy: [...p.claimedBy, s.user.id] }
+              : p,
+          ),
+        });
+        return { ok: true, id: get().transactions[0]?.id ?? "", amount };
+      },
+
+      createPromoCode: (input, now = Date.now()) => {
+        const s = get();
+        // Strict on purpose: never issue a code that differs from what the admin typed.
+        const code = input.code.trim().toUpperCase();
+        if (!PROMO_RULES.codePattern.test(code))
+          return fail("Code must be 4–24 characters: letters, numbers, dashes or underscores.");
+        if (s.promoCodes.some((p) => p.code === code)) return fail("A code with this name already exists.");
+
+        const reward = round6(input.rewardUsdt);
+        if (!Number.isFinite(reward) || reward <= 0 || reward > PROMO_RULES.maxReward)
+          return fail(`Reward must be between 0 and ${fmt(PROMO_RULES.maxReward)} USDT.`);
+        if (!Number.isInteger(input.maxClaims) || input.maxClaims < 1 || input.maxClaims > PROMO_RULES.maxClaims)
+          return fail("Claim limit must be a whole number of at least 1.");
+
+        let expiresAt: string | undefined;
+        if (input.expiresAt) {
+          const at = Date.parse(input.expiresAt);
+          if (!Number.isFinite(at)) return fail("Enter a valid expiry date.");
+          if (at <= now) return fail("Expiry must be in the future.");
+          expiresAt = new Date(at).toISOString();
+        }
+
+        const promo: PromoCode = {
+          code,
+          rewardUsdt: reward,
+          maxClaims: input.maxClaims,
+          currentClaims: 0,
+          active: true,
+          claimedBy: [],
+          ...(expiresAt && { expiresAt }),
+        };
+        set({ promoCodes: [promo, ...s.promoCodes] });
+        return okWith(code);
+      },
+
       /* ---------------- Notifications ---------------- */
 
       pushNotification: (input) =>
@@ -1055,6 +1292,17 @@ export const useAppStore = create<StoreState>()(
           if (accounts) {
             for (const account of Object.values(accounts)) {
               if (account.user && typeof account.user === "object") account.user = withProfileDefaults(account.user);
+            }
+          }
+        }
+        // v4 -> v5: profiles gained rewards state; gift codes are seeded by the defaults.
+        if (version < 5) {
+          const withRewards = (user: object) => ({ rewards: defaultRewards(), ...user });
+          if (state.user && typeof state.user === "object") state.user = withRewards(state.user);
+          const accounts = state.accounts as Record<string, Record<string, unknown>> | undefined;
+          if (accounts) {
+            for (const account of Object.values(accounts)) {
+              if (account.user && typeof account.user === "object") account.user = withRewards(account.user);
             }
           }
         }
