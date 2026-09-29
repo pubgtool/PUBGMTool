@@ -1,0 +1,861 @@
+import { useEffect, useState } from "react";
+import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { ENGINE, PERSISTENCE } from "@/config/protocol";
+import type {
+  AppNotification,
+  AppTab,
+  FundingSource,
+  KycStatus,
+  Language,
+  NotificationKind,
+  Transaction,
+  TransactionType,
+  UserProfile,
+  Usd,
+  VaultPosition,
+  VipTier,
+  WalletBalances,
+} from "@/types/domain";
+
+/* ------------------------------------------------------------------ */
+/* Constants                                                           */
+/* ------------------------------------------------------------------ */
+
+export const TRIAL_VOUCHER_AMOUNT: Usd = 50;
+const MAX_AMOUNT: Usd = 1_000_000_000;
+const MIN_PASSWORD_LENGTH = 6;
+/** Offline catch-up ceiling so a stale tab cannot mint unbounded yield. */
+const MAX_CATCH_UP_MS = 30 * ENGINE.msPerDay;
+const MAX_TRANSACTIONS = 200;
+const MAX_NOTIFICATIONS = 100;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** TRC-20 (T…, 34 chars) or ERC-20/BEP-20 (0x…, 40 hex). */
+const PAYOUT_ADDRESS_RE = /^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[a-fA-F0-9]{40})$/;
+const SEED_TIME = "2026-09-29T00:00:00.000Z";
+
+/* ------------------------------------------------------------------ */
+/* Types                                                               */
+/* ------------------------------------------------------------------ */
+
+export type ActionResult = { ok: true; id?: string } | { ok: false; error: string };
+
+export type TierInput = Pick<
+  VipTier,
+  "name" | "dailyRatePct" | "minDeposit" | "maxDeposit" | "capacity"
+> &
+  Partial<Pick<VipTier, "level" | "isActive">>;
+
+export type TierPatch = Partial<Omit<VipTier, "id">>;
+
+export type NotificationInput = {
+  kind: NotificationKind;
+  title: string;
+  body: string;
+};
+
+interface AccountSnapshot {
+  user: UserProfile;
+  balances: WalletBalances;
+  positions: VaultPosition[];
+  transactions: Transaction[];
+  dailyAccrualDay: string;
+}
+
+export interface StoreData {
+  user: UserProfile;
+  balances: WalletBalances;
+  /** UTC day (YYYY-MM-DD) that `balances.dailyAccrued` belongs to. */
+  dailyAccrualDay: string;
+  tiers: VipTier[];
+  positions: VaultPosition[];
+  transactions: Transaction[];
+  notifications: AppNotification[];
+  /** Saved per-email state so logout/login round-trips restore the wallet. */
+  accounts: Record<string, AccountSnapshot>;
+  activeTab: AppTab;
+  activeLanguage: Language;
+  hasSeenAnnouncement: boolean;
+}
+
+export interface StoreActions {
+  login: (email: string, password: string) => ActionResult;
+  register: (email: string, password: string, displayName?: string) => ActionResult;
+  logout: () => void;
+  updateKyc: () => ActionResult;
+  updatePayoutAddress: (address: string) => ActionResult;
+
+  deposit: (amount: number) => ActionResult;
+  withdraw: (amount: number) => ActionResult;
+  manualBalanceOverride: (patch: Partial<WalletBalances>) => ActionResult;
+
+  addTier: (input: TierInput) => ActionResult;
+  updateTier: (id: string, patch: TierPatch) => ActionResult;
+  deleteTier: (id: string) => ActionResult;
+  toggleTierStatus: (id: string) => ActionResult;
+
+  stakeInVault: (tierId: string, amount: number, source?: FundingSource) => ActionResult;
+  unstakePosition: (positionId: string) => ActionResult;
+  tickYieldEngine: (now?: number) => void;
+
+  pushNotification: (input: NotificationInput) => void;
+  markAsRead: (id: string) => void;
+  markAllAsRead: () => void;
+  deleteNotification: (id: string) => void;
+
+  setActiveTab: (tab: AppTab) => void;
+  setActiveLanguage: (language: Language) => void;
+  setHasSeenAnnouncement: (seen?: boolean) => void;
+}
+
+export type StoreState = StoreData & StoreActions;
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+const OK: ActionResult = { ok: true };
+const fail = (error: string): ActionResult => ({ ok: false, error });
+const okWith = (id: string): ActionResult => ({ ok: true, id });
+
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 6 });
+const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+const normalizeEmail = (email: string) => email.trim().toLowerCase();
+
+function uid(prefix: string): string {
+  const rand =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+  return `${prefix}_${rand}`;
+}
+
+/** Returns a positive, finite amount rounded to 6 decimals, or null. */
+function parseAmount(value: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const rounded = round6(value);
+  return rounded > 0 && rounded <= MAX_AMOUNT ? rounded : null;
+}
+
+function makeTx(
+  type: TransactionType,
+  amount: Usd,
+  extra: { note?: string; positionId?: string } = {},
+): Transaction {
+  return { id: uid("tx"), type, amount, createdAt: new Date().toISOString(), ...extra };
+}
+
+function makeNotification(input: NotificationInput): AppNotification {
+  return { id: uid("ntf"), createdAt: new Date().toISOString(), read: false, ...input };
+}
+
+const prependTx = (list: Transaction[], ...items: Transaction[]) =>
+  [...items, ...list].slice(0, MAX_TRANSACTIONS);
+
+const prependNotifications = (list: AppNotification[], ...items: AppNotification[]) =>
+  [...items, ...list].slice(0, MAX_NOTIFICATIONS);
+
+/* ------------------------------------------------------------------ */
+/* Seed data                                                           */
+/* ------------------------------------------------------------------ */
+
+const GUEST_USER: UserProfile = {
+  id: "guest",
+  email: null,
+  displayName: "Guest",
+  isGuest: true,
+  kycStatus: "NONE",
+  payoutAddress: null,
+  createdAt: SEED_TIME,
+};
+
+const emptyBalances = (): WalletBalances => ({
+  available: 0,
+  staked: 0,
+  trialVoucher: 0,
+  totalEarned: 0,
+  dailyAccrued: 0,
+});
+
+function seedTiers(): VipTier[] {
+  const rows: Array<[string, number, number, number, number, number]> = [
+    // name, daily %, min, max, capacity, filled
+    ["VIP 1", 1.2, 10, 500, 500_000, 184_200],
+    ["VIP 2", 1.8, 500, 2_500, 1_000_000, 412_750],
+    ["VIP 3", 2.4, 2_500, 10_000, 2_000_000, 731_400],
+    ["VIP 4", 3.0, 10_000, 50_000, 3_500_000, 1_206_000],
+    ["VIP 5", 3.6, 50_000, 200_000, 5_000_000, 1_842_500],
+    ["VIP 6", 4.2, 200_000, 1_000_000, 10_000_000, 3_120_000],
+  ];
+  return rows.map(([name, dailyRatePct, minDeposit, maxDeposit, capacity, filled], i) => ({
+    id: `vip-${i + 1}`,
+    level: i + 1,
+    name,
+    dailyRatePct,
+    minDeposit,
+    maxDeposit,
+    capacity,
+    filled,
+    isActive: true,
+  }));
+}
+
+function seedNotifications(): AppNotification[] {
+  return [
+    {
+      id: "ntf_seed_1",
+      kind: "telemetry",
+      title: "Yield engine online",
+      body: "Reward accrual is running. Positions accrue every second and settle to your available balance.",
+      createdAt: "2026-09-29T00:00:03.000Z",
+      read: false,
+    },
+    {
+      id: "ntf_seed_2",
+      kind: "system",
+      title: "Sandbox environment",
+      body: "All balances and rewards are simulated and stored in this browser. No real assets move.",
+      createdAt: "2026-09-29T00:00:02.000Z",
+      read: false,
+    },
+    {
+      id: "ntf_seed_3",
+      kind: "telemetry",
+      title: "Vault capacity update",
+      body: "VIP 6 capacity is 31% utilised. Register to claim a 50 USDT trial voucher.",
+      createdAt: "2026-09-29T00:00:01.000Z",
+      read: false,
+    },
+  ];
+}
+
+function createInitialData(): StoreData {
+  return {
+    user: GUEST_USER,
+    balances: emptyBalances(),
+    dailyAccrualDay: utcDay(Date.parse(SEED_TIME)),
+    tiers: seedTiers(),
+    positions: [],
+    transactions: [],
+    notifications: seedNotifications(),
+    accounts: {},
+    activeTab: "terminal",
+    activeLanguage: "en",
+    hasSeenAnnouncement: false,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Pure engine logic                                                   */
+/* ------------------------------------------------------------------ */
+
+type Settleable = Pick<StoreData, "balances" | "positions" | "dailyAccrualDay">;
+
+/**
+ * Accrues yield on every active position up to `now` and credits it to the
+ * available balance. Returns null when nothing changed.
+ */
+function settle(s: Settleable, now: number): Settleable | null {
+  const day = utcDay(now);
+  const stamp = new Date(now).toISOString();
+  let earned = 0;
+
+  const positions = s.positions.map((p) => {
+    if (p.status !== "active") return p;
+    const elapsed = Math.min(now - Date.parse(p.lastAccruedAt), MAX_CATCH_UP_MS);
+    if (!(elapsed > 0)) return p;
+    const reward = p.principal * (p.dailyRatePct / 100) * (elapsed / ENGINE.msPerDay);
+    earned += reward;
+    return { ...p, accrued: p.accrued + reward, lastAccruedAt: stamp };
+  });
+
+  if (earned === 0 && day === s.dailyAccrualDay) return null;
+
+  const dailyBase = day === s.dailyAccrualDay ? s.balances.dailyAccrued : 0;
+  return {
+    positions,
+    dailyAccrualDay: day,
+    balances: {
+      ...s.balances,
+      available: s.balances.available + earned,
+      totalEarned: s.balances.totalEarned + earned,
+      dailyAccrued: dailyBase + earned,
+    },
+  };
+}
+
+function snapshotAccounts(s: StoreData): StoreData["accounts"] {
+  const email = s.user.email;
+  if (s.user.isGuest || !email) return s.accounts;
+  return {
+    ...s.accounts,
+    [email]: {
+      user: s.user,
+      balances: s.balances,
+      positions: s.positions,
+      transactions: s.transactions,
+      dailyAccrualDay: s.dailyAccrualDay,
+    },
+  };
+}
+
+function validateTier(tier: VipTier, others: VipTier[]): string | null {
+  if (!tier.name.trim()) return "Tier name is required.";
+  if (!Number.isInteger(tier.level) || tier.level < 1) return "Tier level must be a whole number ≥ 1.";
+  if (others.some((t) => t.level === tier.level)) return `A tier with level ${tier.level} already exists.`;
+  if (!Number.isFinite(tier.dailyRatePct) || tier.dailyRatePct <= 0 || tier.dailyRatePct > 100)
+    return "Daily rate must be greater than 0% and at most 100%.";
+  if (![tier.minDeposit, tier.maxDeposit, tier.capacity].every(Number.isFinite) || tier.minDeposit <= 0)
+    return "Deposit limits and capacity must be positive numbers.";
+  if (tier.maxDeposit < tier.minDeposit) return "Maximum deposit cannot be below the minimum.";
+  if (tier.capacity < tier.minDeposit) return "Capacity cannot be below the minimum deposit.";
+  if (tier.capacity < tier.filled) return `Capacity cannot be below the ${fmt(tier.filled)} USDT already staked.`;
+  return null;
+}
+
+const byLevel = (a: VipTier, b: VipTier) => a.level - b.level;
+
+const BALANCE_KEYS: Array<keyof WalletBalances> = [
+  "available",
+  "staked",
+  "trialVoucher",
+  "totalEarned",
+  "dailyAccrued",
+];
+
+/* ------------------------------------------------------------------ */
+/* Store                                                               */
+/* ------------------------------------------------------------------ */
+
+const PERSISTED_KEYS = [
+  "user",
+  "balances",
+  "dailyAccrualDay",
+  "tiers",
+  "positions",
+  "transactions",
+  "notifications",
+  "accounts",
+  "activeTab",
+  "activeLanguage",
+  "hasSeenAnnouncement",
+] as const satisfies ReadonlyArray<keyof StoreData>;
+
+export const useAppStore = create<StoreState>()(
+  persist(
+    (set, get) => ({
+      ...createInitialData(),
+
+      /* ---------------- Auth ---------------- */
+
+      login: (email, password) => {
+        const key = normalizeEmail(email);
+        if (!EMAIL_RE.test(key)) return fail("Enter a valid email address.");
+        if (password.length < MIN_PASSWORD_LENGTH)
+          return fail(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+
+        const s = get();
+        if (s.user.email === key) return OK;
+        const account = s.accounts[key];
+        if (!account) return fail("No account found for this email. Register first.");
+
+        set({
+          accounts: snapshotAccounts(s),
+          user: account.user,
+          balances: account.balances,
+          positions: account.positions,
+          transactions: account.transactions,
+          dailyAccrualDay: account.dailyAccrualDay,
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "account",
+              title: "Signed in",
+              body: `Welcome back, ${account.user.displayName}.`,
+            }),
+          ),
+        });
+        get().tickYieldEngine();
+        return OK;
+      },
+
+      register: (email, password, displayName) => {
+        const key = normalizeEmail(email);
+        if (!EMAIL_RE.test(key)) return fail("Enter a valid email address.");
+        if (password.length < MIN_PASSWORD_LENGTH)
+          return fail(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+
+        const s = get();
+        if (s.user.email === key || s.accounts[key]) return fail("An account with this email already exists.");
+
+        const now = Date.now();
+        const user: UserProfile = {
+          id: uid("usr"),
+          email: key,
+          displayName: displayName?.trim() || key.split("@")[0] || "Member",
+          isGuest: false,
+          kycStatus: "NONE",
+          payoutAddress: null,
+          createdAt: new Date(now).toISOString(),
+        };
+        const balances: WalletBalances = { ...emptyBalances(), trialVoucher: TRIAL_VOUCHER_AMOUNT };
+        const transactions = [
+          makeTx("voucher", TRIAL_VOUCHER_AMOUNT, { note: "Registration trial voucher" }),
+        ];
+        const dailyAccrualDay = utcDay(now);
+
+        set({
+          accounts: {
+            ...snapshotAccounts(s),
+            [key]: { user, balances, positions: [], transactions, dailyAccrualDay },
+          },
+          user,
+          balances,
+          positions: [],
+          transactions,
+          dailyAccrualDay,
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Trial voucher credited",
+              body: `${TRIAL_VOUCHER_AMOUNT} USDT trial voucher added. Stake it in any open vault to start earning.`,
+            }),
+            makeNotification({
+              kind: "account",
+              title: "Account created",
+              body: `Welcome to NEXUS, ${user.displayName}.`,
+            }),
+          ),
+        });
+        return okWith(user.id);
+      },
+
+      logout: () => {
+        const s = get();
+        if (s.user.isGuest) return;
+        set({
+          accounts: snapshotAccounts(s),
+          user: GUEST_USER,
+          balances: emptyBalances(),
+          positions: [],
+          transactions: [],
+          dailyAccrualDay: utcDay(Date.now()),
+          activeTab: "terminal",
+        });
+      },
+
+      updateKyc: () => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to submit verification.");
+        if (s.user.kycStatus === "PENDING") return fail("Verification is already under review.");
+        if (s.user.kycStatus === "VERIFIED") return fail("Your identity is already verified.");
+        const status: KycStatus = "PENDING";
+        set({
+          user: { ...s.user, kycStatus: status },
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "account",
+              title: "Verification submitted",
+              body: "Your KYC documents are pending review.",
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      updatePayoutAddress: (address) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to set a payout address.");
+        const value = address.trim();
+        if (!PAYOUT_ADDRESS_RE.test(value))
+          return fail("Enter a valid TRC-20 (T…) or ERC-20/BEP-20 (0x…) address.");
+        set({
+          user: { ...s.user, payoutAddress: value },
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "account",
+              title: "Payout address updated",
+              body: `Withdrawals will go to ${value.slice(0, 6)}…${value.slice(-4)}.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      /* ---------------- Wallet ---------------- */
+
+      deposit: (amount) => {
+        const value = parseAmount(amount);
+        if (value === null) return fail("Enter a valid amount.");
+        const s = get();
+        set({
+          balances: { ...s.balances, available: s.balances.available + value },
+          transactions: prependTx(s.transactions, makeTx("deposit", value)),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Deposit received",
+              body: `${fmt(value)} USDT credited to your available balance.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      withdraw: (amount) => {
+        const value = parseAmount(amount);
+        if (value === null) return fail("Enter a valid amount.");
+        get().tickYieldEngine();
+        const s = get();
+        if (value > s.balances.available)
+          return fail(`Insufficient available balance (${fmt(s.balances.available)} USDT).`);
+        const to = s.user.payoutAddress;
+        set({
+          balances: { ...s.balances, available: s.balances.available - value },
+          transactions: prependTx(
+            s.transactions,
+            makeTx("withdraw", value, { note: to ? `To ${to}` : "No payout address set" }),
+          ),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Withdrawal processed",
+              body: `${fmt(value)} USDT withdrawn from your available balance.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      manualBalanceOverride: (patch) => {
+        const entries = Object.entries(patch) as Array<[keyof WalletBalances, number]>;
+        if (entries.length === 0) return fail("Nothing to override.");
+        for (const [key, value] of entries) {
+          if (!BALANCE_KEYS.includes(key)) return fail(`Unknown balance field: ${String(key)}.`);
+          if (!Number.isFinite(value) || value < 0 || value > MAX_AMOUNT)
+            return fail(`${key} must be a number between 0 and ${fmt(MAX_AMOUNT)}.`);
+        }
+        const s = get();
+        const next = { ...s.balances };
+        for (const [key, value] of entries) next[key] = round6(value);
+        set({
+          balances: next,
+          transactions: prependTx(
+            s.transactions,
+            makeTx("adjustment", next.available - s.balances.available, {
+              note: `Sandbox override: ${entries.map(([k]) => k).join(", ")}`,
+            }),
+          ),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "system",
+              title: "Sandbox balance override",
+              body: `Admin override applied to: ${entries.map(([k]) => k).join(", ")}.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      /* ---------------- Dynamic VIP tiers ---------------- */
+
+      addTier: (input) => {
+        const s = get();
+        const tier: VipTier = {
+          id: uid("vip"),
+          level: input.level ?? Math.max(0, ...s.tiers.map((t) => t.level)) + 1,
+          name: input.name.trim(),
+          dailyRatePct: input.dailyRatePct,
+          minDeposit: input.minDeposit,
+          maxDeposit: input.maxDeposit,
+          capacity: input.capacity,
+          filled: 0,
+          isActive: input.isActive ?? true,
+        };
+        const error = validateTier(tier, s.tiers);
+        if (error) return fail(error);
+        set({
+          tiers: [...s.tiers, tier].sort(byLevel),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "system",
+              title: "Vault tier added",
+              body: `${tier.name} is live at ${tier.dailyRatePct}% daily.`,
+            }),
+          ),
+        });
+        return okWith(tier.id);
+      },
+
+      updateTier: (id, patch) => {
+        const s = get();
+        const current = s.tiers.find((t) => t.id === id);
+        if (!current) return fail("Tier not found.");
+        const next: VipTier = { ...current, ...patch, id: current.id };
+        next.name = next.name.trim();
+        const error = validateTier(next, s.tiers.filter((t) => t.id !== id));
+        if (error) return fail(error);
+
+        const rateChanged = next.dailyRatePct !== current.dailyRatePct;
+        set({
+          tiers: s.tiers.map((t) => (t.id === id ? next : t)).sort(byLevel),
+          // Open positions keep their snapshot; only labels follow the tier.
+          positions: s.positions.map((p) =>
+            p.tierId === id ? { ...p, tierName: next.name, tierLevel: next.level } : p,
+          ),
+          notifications: rateChanged
+            ? prependNotifications(
+                s.notifications,
+                makeNotification({
+                  kind: "telemetry",
+                  title: `${next.name} rate updated`,
+                  body: `Daily rate is now ${next.dailyRatePct}% (was ${current.dailyRatePct}%). Open positions keep their original rate.`,
+                }),
+              )
+            : s.notifications,
+        });
+        return OK;
+      },
+
+      deleteTier: (id) => {
+        const s = get();
+        const tier = s.tiers.find((t) => t.id === id);
+        if (!tier) return fail("Tier not found.");
+        if (s.positions.some((p) => p.tierId === id && p.status === "active"))
+          return fail("This tier has open positions. Deactivate it instead.");
+        set({
+          tiers: s.tiers.filter((t) => t.id !== id),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "system",
+              title: "Vault tier removed",
+              body: `${tier.name} was removed.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      toggleTierStatus: (id) => {
+        const s = get();
+        const tier = s.tiers.find((t) => t.id === id);
+        if (!tier) return fail("Tier not found.");
+        const isActive = !tier.isActive;
+        set({
+          tiers: s.tiers.map((t) => (t.id === id ? { ...t, isActive } : t)),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "telemetry",
+              title: `${tier.name} ${isActive ? "opened" : "closed"}`,
+              body: isActive
+                ? "New deposits are accepted again."
+                : "New deposits are paused. Existing positions keep earning.",
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      /* ---------------- Staking engine ---------------- */
+
+      stakeInVault: (tierId, amount, source = "balance") => {
+        const value = parseAmount(amount);
+        if (value === null) return fail("Enter a valid amount.");
+
+        get().tickYieldEngine();
+        const s = get();
+        const tier = s.tiers.find((t) => t.id === tierId);
+        if (!tier) return fail("Vault not found.");
+        if (!tier.isActive) return fail(`${tier.name} is currently closed for new deposits.`);
+        if (value < tier.minDeposit || value > tier.maxDeposit)
+          return fail(
+            `${tier.name} accepts ${fmt(tier.minDeposit)}–${fmt(tier.maxDeposit)} USDT per position.`,
+          );
+        const remaining = tier.capacity - tier.filled;
+        if (value > remaining) return fail(`${tier.name} has only ${fmt(remaining)} USDT of capacity left.`);
+
+        if (source === "voucher") {
+          if (value > s.balances.trialVoucher)
+            return fail(`Insufficient trial voucher (${fmt(s.balances.trialVoucher)} USDT).`);
+        } else if (value > s.balances.available) {
+          return fail(`Insufficient available balance (${fmt(s.balances.available)} USDT).`);
+        }
+
+        const stamp = new Date().toISOString();
+        const position: VaultPosition = {
+          id: uid("pos"),
+          tierId: tier.id,
+          tierName: tier.name,
+          tierLevel: tier.level,
+          principal: value,
+          dailyRatePct: tier.dailyRatePct,
+          fundedBy: source,
+          openedAt: stamp,
+          lastAccruedAt: stamp,
+          accrued: 0,
+          status: "active",
+        };
+
+        set({
+          balances: {
+            ...s.balances,
+            available: source === "balance" ? s.balances.available - value : s.balances.available,
+            trialVoucher: source === "voucher" ? s.balances.trialVoucher - value : s.balances.trialVoucher,
+            staked: s.balances.staked + value,
+          },
+          positions: [position, ...s.positions],
+          tiers: s.tiers.map((t) => (t.id === tier.id ? { ...t, filled: t.filled + value } : t)),
+          transactions: prependTx(
+            s.transactions,
+            makeTx("stake", value, {
+              positionId: position.id,
+              note: `${tier.name}${source === "voucher" ? " (trial voucher)" : ""}`,
+            }),
+          ),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "stake",
+              title: "Position opened",
+              body: `${fmt(value)} USDT staked in ${tier.name} at ${tier.dailyRatePct}% daily.`,
+            }),
+          ),
+        });
+        return okWith(position.id);
+      },
+
+      unstakePosition: (positionId) => {
+        const s = get();
+        const now = Date.now();
+        const base = { ...s, ...(settle(s, now) ?? {}) };
+        const position = base.positions.find((p) => p.id === positionId);
+        if (!position || position.status !== "active") return fail("Active position not found.");
+
+        const returned = position.fundedBy === "balance" ? position.principal : 0;
+        set({
+          dailyAccrualDay: base.dailyAccrualDay,
+          balances: {
+            ...base.balances,
+            available: base.balances.available + returned,
+            staked: Math.max(0, base.balances.staked - position.principal),
+          },
+          positions: base.positions.map((p) =>
+            p.id === positionId ? { ...p, status: "closed", closedAt: new Date(now).toISOString() } : p,
+          ),
+          tiers: base.tiers.map((t) =>
+            t.id === position.tierId ? { ...t, filled: Math.max(0, t.filled - position.principal) } : t,
+          ),
+          transactions: prependTx(
+            base.transactions,
+            makeTx("unstake", returned, {
+              positionId,
+              note:
+                position.fundedBy === "voucher"
+                  ? "Trial voucher principal is non-withdrawable; rewards kept"
+                  : position.tierName,
+            }),
+          ),
+          notifications: prependNotifications(
+            base.notifications,
+            makeNotification({
+              kind: "stake",
+              title: "Position closed",
+              body:
+                position.fundedBy === "voucher"
+                  ? `${position.tierName} closed. ${fmt(position.accrued)} USDT in rewards was kept; the voucher principal expired.`
+                  : `${fmt(position.principal)} USDT returned from ${position.tierName}.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      tickYieldEngine: (now = Date.now()) => {
+        const patch = settle(get(), now);
+        if (patch) set(patch);
+      },
+
+      /* ---------------- Notifications ---------------- */
+
+      pushNotification: (input) =>
+        set((s) => ({ notifications: prependNotifications(s.notifications, makeNotification(input)) })),
+
+      markAsRead: (id) =>
+        set((s) => ({
+          notifications: s.notifications.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n)),
+        })),
+
+      markAllAsRead: () =>
+        set((s) => ({
+          notifications: s.notifications.some((n) => !n.read)
+            ? s.notifications.map((n) => (n.read ? n : { ...n, read: true }))
+            : s.notifications,
+        })),
+
+      deleteNotification: (id) =>
+        set((s) => ({ notifications: s.notifications.filter((n) => n.id !== id) })),
+
+      /* ---------------- UI state ---------------- */
+
+      setActiveTab: (activeTab) => set({ activeTab }),
+      setActiveLanguage: (activeLanguage) => set({ activeLanguage }),
+      setHasSeenAnnouncement: (seen = true) => set({ hasSeenAnnouncement: seen }),
+    }),
+    {
+      name: PERSISTENCE.storageKey,
+      version: PERSISTENCE.version,
+      storage: createJSONStorage(() => localStorage),
+      // Hydrate after mount (see useStoreHydration) to avoid SSR mismatches.
+      skipHydration: true,
+      partialize: (s) =>
+        Object.fromEntries(PERSISTED_KEYS.map((k) => [k, s[k]])) as unknown as StoreState,
+      migrate: (persisted, version) =>
+        (version === PERSISTENCE.version ? persisted : {}) as StoreState,
+    },
+  ),
+);
+
+/* ------------------------------------------------------------------ */
+/* Selectors & hooks                                                   */
+/* ------------------------------------------------------------------ */
+
+export const selectTotalBalance = (s: StoreState): Usd =>
+  s.balances.available + s.balances.staked + s.balances.trialVoucher;
+
+export const selectUnreadCount = (s: StoreState): number =>
+  s.notifications.reduce((n, item) => n + (item.read ? 0 : 1), 0);
+
+/**
+ * Call once near the app root. Rehydrates from localStorage after mount and
+ * keeps every open tab in sync via the `storage` event. Returns true once
+ * persisted state has been applied.
+ */
+export function useStoreHydration(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = useAppStore.persist.onFinishHydration(() => setHydrated(true));
+    void useAppStore.persist.rehydrate();
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PERSISTENCE.storageKey) void useAppStore.persist.rehydrate();
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  return hydrated;
+}
