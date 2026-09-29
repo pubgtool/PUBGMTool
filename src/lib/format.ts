@@ -17,3 +17,11 @@ export const formatSignedPct = (n: number) => `${n >= 0 ? "+" : "-"}${plain(2).f
 
 /** Daily rate without trailing zeros, e.g. 1.2%. */
 export const formatRate = (pct: number) => `${parseFloat(pct.toFixed(2))}%`;
+
+const flexible = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+
+/** At least 2 and up to 6 decimals, so exact stake amounts are never rounded in copy. */
+export const formatAmountFlexible = (n: number) => flexible.format(n);
+
+/** Rewards can be tiny; show 4 decimals below 0.01 so they never read as 0.00. */
+export const formatReward = (n: number) => formatAmount(n, n > 0 && n < 0.01 ? 4 : 2);
