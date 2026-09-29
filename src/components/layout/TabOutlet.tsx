@@ -1,7 +1,9 @@
 "use client";
 
+import { useLayoutEffect } from "react";
 import { NAV_ITEMS } from "@/components/layout/BottomNav";
 import { MainView } from "@/components/screens/MainView";
+import { VaultsView } from "@/components/screens/VaultsView";
 import { formatUsdt } from "@/lib/format";
 import { selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
 
@@ -11,26 +13,23 @@ function PlaceholderView() {
   const total = useAppStore(selectTotalBalance);
   const balances = useAppStore((s) => s.balances);
   const unread = useAppStore(selectUnreadCount);
-  const tiers = useAppStore((s) => s.tiers);
   const user = useAppStore((s) => s.user);
 
   const title = NAV_ITEMS.find((i) => i.tab === tab)?.label ?? "Main";
   const rows: Array<[string, string]> =
-    tab === "vaults"
-      ? tiers.map((t) => [t.name, `${t.dailyRatePct}% daily${t.isActive ? "" : " · closed"}`])
-      : tab === "notifications"
-        ? [["Unread alerts", String(unread)]]
-        : tab === "profile"
-          ? [
-              ["Account", user.displayName],
-              ["KYC", user.kycStatus],
-            ]
-          : [
-              ["Total balance", formatUsdt(total)],
-              ["Available", formatUsdt(balances.available)],
-              ["Staked", formatUsdt(balances.staked)],
-              ["Earned today", formatUsdt(balances.dailyAccrued)],
-            ];
+    tab === "notifications"
+      ? [["Unread alerts", String(unread)]]
+      : tab === "profile"
+        ? [
+            ["Account", user.displayName],
+            ["KYC", user.kycStatus],
+          ]
+        : [
+            ["Total balance", formatUsdt(total)],
+            ["Available", formatUsdt(balances.available)],
+            ["Invested", formatUsdt(balances.staked)],
+            ["Earned today", formatUsdt(balances.dailyAccrued)],
+          ];
 
   return (
     <main className="flex-1 px-4 pt-6">
@@ -49,5 +48,14 @@ function PlaceholderView() {
 
 export function TabOutlet() {
   const tab = useAppStore((s) => s.activeTab);
-  return tab === "main" ? <MainView /> : <PlaceholderView />;
+
+  // Tabs share one document scroll; start each at the top. Runs before child
+  // effects, so a scroll-to-tier from Main still wins.
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [tab]);
+
+  if (tab === "main") return <MainView />;
+  if (tab === "vaults") return <VaultsView />;
+  return <PlaceholderView />;
 }

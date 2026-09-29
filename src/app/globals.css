@@ -3,6 +3,6 @@
 @tailwind utilities;
 
 @layer base {
-  html { @apply bg-canvas text-ink antialiased; }
+  html { @apply bg-canvas text-ink antialiased; scrollbar-gutter: stable; }
   .tabular { font-variant-numeric: tabular-nums; }
 }

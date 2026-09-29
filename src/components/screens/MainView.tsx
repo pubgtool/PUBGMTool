@@ -77,7 +77,7 @@ export function MainView() {
   const actions: Array<{ label: string; Icon: LucideIcon; primary?: boolean; onPress: () => void }> = [
     { label: "Deposit", Icon: ArrowDownLeft, primary: true, onPress: () => openWallet("deposit") },
     { label: "Withdraw", Icon: ArrowUpRight, onPress: () => openWallet("withdraw") },
-    { label: "Vaults", Icon: Zap, onPress: () => openVaults() },
+    { label: "VIP Plans", Icon: Zap, onPress: () => openVaults() },
     { label: "History", Icon: History, onPress: () => openWallet("history") },
   ];
 
@@ -180,7 +180,7 @@ export function MainView() {
                   {mask(formatAmount(voucher))} USDT Trial Allocation Active
                 </span>
                 <span className="block text-xs text-amber-700/80">
-                  Deploy it into {starterTier?.name ?? "a vault"} to start earning
+                  Deploy it into {starterTier?.name ?? "a VIP plan"} to start earning
                 </span>
               </span>
               <ChevronRight className="h-4 w-4 shrink-0 text-amber-600" aria-hidden />
@@ -215,7 +215,7 @@ export function MainView() {
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <Layers className="h-4 w-4 text-slate-400" aria-hidden />
-            Active Allocations
+            Active Investment Plans
           </h2>
           {active.length > 0 && (
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-600">
@@ -229,11 +229,11 @@ export function MainView() {
             <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-400 shadow-sm">
               <Zap className="h-5 w-5" aria-hidden />
             </span>
-            <p className="mt-3 text-sm font-medium">No active allocations</p>
+            <p className="mt-3 text-sm font-medium">No active plans</p>
             <p className="mt-1 text-xs text-slate-500">
               {voucher > 0
-                ? "Put your trial voucher to work and start earning daily rewards."
-                : "Stake in a VIP vault to start earning daily rewards."}
+                ? "Put your trial voucher to work and start earning daily income."
+                : "Activate a VIP plan to start earning daily income."}
             </p>
             <motion.button
               type="button"
@@ -244,7 +244,7 @@ export function MainView() {
             >
               {voucher > 0
                 ? `Activate Starter Node with ${formatAmount(voucher, Number.isInteger(voucher) ? 0 : 2)} USDT Voucher`
-                : "Explore Vaults"}
+                : "Explore VIP Plans"}
             </motion.button>
           </div>
         ) : (
@@ -269,13 +269,13 @@ export function MainView() {
 
                   <dl className="mt-3 grid grid-cols-2 gap-3">
                     <div>
-                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Staked</dt>
+                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Invested</dt>
                       <dd className="mt-0.5 font-mono text-sm font-medium tabular-nums">
                         {mask(formatAmount(p.principal))}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Rewards</dt>
+                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Income</dt>
                       <dd className="mt-0.5 font-mono text-sm font-medium tabular-nums text-emerald-600">
                         {hidden ? MASK : `+${formatAmount(p.accrued, 6)}`}
                       </dd>
@@ -284,13 +284,13 @@ export function MainView() {
 
                   <div className="mt-3">
                     <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
-                      <span>24h reward cycle</span>
+                      <span>24h income cycle</span>
                       <span className="tabular-nums">{progress.toFixed(0)}%</span>
                     </div>
                     <div
                       className="h-1.5 overflow-hidden rounded-full bg-slate-200/70"
                       role="progressbar"
-                      aria-label="24 hour reward cycle"
+                      aria-label="24 hour income cycle"
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={Math.round(progress)}
@@ -311,7 +311,7 @@ export function MainView() {
                   onClick={() => openVaults()}
                   className="w-full text-center text-xs font-medium text-slate-500 hover:text-slate-900"
                 >
-                  +{active.length - MAX_POSITIONS_SHOWN} more positions
+                  +{active.length - MAX_POSITIONS_SHOWN} more plans
                 </button>
               </li>
             )}
@@ -323,7 +323,7 @@ export function MainView() {
       <section className={`${CARD} p-4`}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Flame className="h-4 w-4 text-slate-400" aria-hidden />
-          Trending VIP Vaults
+          Trending VIP Packages
         </h2>
 
         {trending.length === 0 ? (

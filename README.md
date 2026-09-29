@@ -1,6 +1,6 @@
 # NEXUS PROTOCOL
 
-Mobile-first VIP staking & yield interface. Next.js 15 (App Router), strict TypeScript, Tailwind, Framer Motion, Zustand. Runs on an in-memory mock engine persisted to localStorage; no on-chain calls.
+Mobile-first VIP investment plans & daily income interface. Next.js 15 (App Router), strict TypeScript, Tailwind, Framer Motion, Zustand. Runs on an in-memory mock engine persisted to localStorage; no on-chain calls.
 
 ```
 pnpm dev        # start

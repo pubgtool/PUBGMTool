@@ -213,7 +213,7 @@ function seedNotifications(): AppNotification[] {
       id: "ntf_seed_1",
       kind: "telemetry",
       title: "Yield engine online",
-      body: "Reward accrual is running. Positions accrue every second and settle to your available balance.",
+      body: "Daily income accrual is running. Plans accrue every second and settle to your available balance.",
       createdAt: "2026-09-29T00:00:03.000Z",
       read: false,
     },
@@ -221,14 +221,14 @@ function seedNotifications(): AppNotification[] {
       id: "ntf_seed_2",
       kind: "system",
       title: "Sandbox environment",
-      body: "All balances and rewards are simulated and stored in this browser. No real assets move.",
+      body: "All balances and income are simulated and stored in this browser. No real assets move.",
       createdAt: "2026-09-29T00:00:02.000Z",
       read: false,
     },
     {
       id: "ntf_seed_3",
       kind: "telemetry",
-      title: "Vault capacity update",
+      title: "Plan capacity update",
       body: "VIP 6 capacity is 31% utilised. Register to claim a 50 USDT trial voucher.",
       createdAt: "2026-09-29T00:00:01.000Z",
       read: false,
@@ -318,7 +318,7 @@ function validateTier(tier: VipTier, others: VipTier[]): string | null {
     return "Deposit limits and capacity must be positive numbers.";
   if (tier.maxDeposit < tier.minDeposit) return "Maximum deposit cannot be below the minimum.";
   if (tier.capacity < tier.minDeposit) return "Capacity cannot be below the minimum deposit.";
-  if (tier.capacity < tier.filled) return `Capacity cannot be below the ${fmt(tier.filled)} USDT already staked.`;
+  if (tier.capacity < tier.filled) return `Capacity cannot be below the ${fmt(tier.filled)} USDT already invested.`;
   return null;
 }
 
@@ -428,7 +428,7 @@ export const useAppStore = create<StoreState>()(
             makeNotification({
               kind: "wallet",
               title: "Trial voucher credited",
-              body: `${TRIAL_VOUCHER_AMOUNT} USDT trial voucher added. Stake it in any open vault to start earning.`,
+              body: `${TRIAL_VOUCHER_AMOUNT} USDT trial voucher added. Activate it on any open VIP plan to start earning.`,
             }),
             makeNotification({
               kind: "account",
@@ -595,7 +595,7 @@ export const useAppStore = create<StoreState>()(
             s.notifications,
             makeNotification({
               kind: "system",
-              title: "Vault tier added",
+              title: "VIP tier added",
               body: `${tier.name} is live at ${tier.dailyRatePct}% daily.`,
             }),
           ),
@@ -625,7 +625,7 @@ export const useAppStore = create<StoreState>()(
                 makeNotification({
                   kind: "telemetry",
                   title: `${next.name} rate updated`,
-                  body: `Daily rate is now ${next.dailyRatePct}% (was ${current.dailyRatePct}%). Open positions keep their original rate.`,
+                  body: `Daily rate is now ${next.dailyRatePct}% (was ${current.dailyRatePct}%). Open plans keep their original rate.`,
                 }),
               )
             : s.notifications,
@@ -638,14 +638,14 @@ export const useAppStore = create<StoreState>()(
         const tier = s.tiers.find((t) => t.id === id);
         if (!tier) return fail("Tier not found.");
         if (s.positions.some((p) => p.tierId === id && p.status === "active"))
-          return fail("This tier has open positions. Deactivate it instead.");
+          return fail("This tier has open plans. Deactivate it instead.");
         set({
           tiers: s.tiers.filter((t) => t.id !== id),
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "system",
-              title: "Vault tier removed",
+              title: "VIP tier removed",
               body: `${tier.name} was removed.`,
             }),
           ),
@@ -666,8 +666,8 @@ export const useAppStore = create<StoreState>()(
               kind: "telemetry",
               title: `${tier.name} ${isActive ? "opened" : "closed"}`,
               body: isActive
-                ? "New deposits are accepted again."
-                : "New deposits are paused. Existing positions keep earning.",
+                ? "New investments are accepted again."
+                : "New investments are paused. Existing plans keep earning.",
             }),
           ),
         });
@@ -683,11 +683,11 @@ export const useAppStore = create<StoreState>()(
         get().tickYieldEngine();
         const s = get();
         const tier = s.tiers.find((t) => t.id === tierId);
-        if (!tier) return fail("Vault not found.");
-        if (!tier.isActive) return fail(`${tier.name} is currently closed for new deposits.`);
+        if (!tier) return fail("VIP plan not found.");
+        if (!tier.isActive) return fail(`${tier.name} is currently closed for new investments.`);
         if (value < tier.minDeposit || value > tier.maxDeposit)
           return fail(
-            `${tier.name} accepts ${fmt(tier.minDeposit)}–${fmt(tier.maxDeposit)} USDT per position.`,
+            `${tier.name} accepts ${fmt(tier.minDeposit)}–${fmt(tier.maxDeposit)} USDT per plan.`,
           );
         const remaining = tier.capacity - tier.filled;
         if (value > remaining) return fail(`${tier.name} has only ${fmt(remaining)} USDT of capacity left.`);
@@ -734,8 +734,8 @@ export const useAppStore = create<StoreState>()(
             s.notifications,
             makeNotification({
               kind: "stake",
-              title: "Position opened",
-              body: `${fmt(value)} USDT staked in ${tier.name} at ${tier.dailyRatePct}% daily.`,
+              title: "Plan activated",
+              body: `${fmt(value)} USDT invested in ${tier.name} at ${tier.dailyRatePct}% daily income.`,
             }),
           ),
         });
@@ -747,7 +747,7 @@ export const useAppStore = create<StoreState>()(
         const now = Date.now();
         const base = { ...s, ...(settle(s, now) ?? {}) };
         const position = base.positions.find((p) => p.id === positionId);
-        if (!position || position.status !== "active") return fail("Active position not found.");
+        if (!position || position.status !== "active") return fail("Active plan not found.");
 
         const returned = position.fundedBy === "balance" ? position.principal : 0;
         set({
@@ -769,7 +769,7 @@ export const useAppStore = create<StoreState>()(
               positionId,
               note:
                 position.fundedBy === "voucher"
-                  ? "Trial voucher principal is non-withdrawable; rewards kept"
+                  ? "Trial voucher principal is non-withdrawable; income kept"
                   : position.tierName,
             }),
           ),
@@ -777,10 +777,10 @@ export const useAppStore = create<StoreState>()(
             base.notifications,
             makeNotification({
               kind: "stake",
-              title: "Position closed",
+              title: "Plan closed",
               body:
                 position.fundedBy === "voucher"
-                  ? `${position.tierName} closed. ${fmt(position.accrued)} USDT in rewards was kept; the voucher principal expired.`
+                  ? `${position.tierName} closed. ${fmt(position.accrued)} USDT in income was kept; the voucher principal expired.`
                   : `${fmt(position.principal)} USDT returned from ${position.tierName}.`,
             }),
           ),

@@ -3,7 +3,7 @@
 export const PROTOCOL = {
   name: "NEXUS PROTOCOL",
   shortName: "NEXUS",
-  tagline: "VIP staking & yield infrastructure",
+  tagline: "VIP investment plans & daily income",
   token: { symbol: "USDT", decimals: 6 },
   /** Currency shown in the UI; the mock engine has no on-chain settlement. */
   displayCurrency: "USDT",

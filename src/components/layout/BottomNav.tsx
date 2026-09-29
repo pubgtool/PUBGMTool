@@ -14,7 +14,7 @@ interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { tab: "main", label: "Main", Icon: LayoutGrid },
-  { tab: "vaults", label: "Vaults", Icon: Zap },
+  { tab: "vaults", label: "VIP", Icon: Zap },
   { tab: "wallet", label: "Wallet", Icon: Wallet },
   { tab: "notifications", label: "Alerts", Icon: Bell },
   { tab: "profile", label: "Profile", Icon: User },
