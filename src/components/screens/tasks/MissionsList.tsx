@@ -25,6 +25,7 @@ export interface MissionActions {
   onClaim: (def: TaskDef) => boolean;
   onInvite: () => void;
   onGetPlan: () => void;
+  onAuth: () => void;
 }
 
 interface Props extends MissionActions {
@@ -82,6 +83,7 @@ function TaskCard({
   onClaim,
   onInvite,
   onGetPlan,
+  onAuth,
 }: { def: TaskDef; view: TaskView; guest: boolean; invites: number } & MissionActions) {
   const [burst, setBurst] = useState(0);
   const Icon = ICONS[def.id];
@@ -93,9 +95,15 @@ function TaskCard({
   let cta: React.ReactNode;
   if (guest) {
     cta = (
-      <button type="button" disabled className={`${base} bg-slate-100 text-slate-400`}>
+      <motion.button
+        type="button"
+        whileTap={TAP}
+        transition={SPRING}
+        onClick={onAuth}
+        className={`${base} bg-slate-950 text-white hover:bg-slate-900 focus-visible:ring-slate-950`}
+      >
         Sign in
-      </button>
+      </motion.button>
     );
   } else if (view.status === "claimed") {
     cta = (

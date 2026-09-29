@@ -9,7 +9,7 @@ import { RewardsHero } from "@/components/screens/tasks/RewardsHero";
 import { toast } from "@/components/ui/Toast";
 import { COMMUNITY, TASKS, type TaskDef } from "@/config/rewards";
 import { formatAmount } from "@/lib/format";
-import { useNow } from "@/lib/hooks";
+import { useNow, useRequireAuth } from "@/lib/hooks";
 import { checkInView, computeTaskBonus, taskView, type TaskView } from "@/lib/rewards";
 import { useAppStore } from "@/lib/store";
 import { msUntilNextUtcDay } from "@/lib/time";
@@ -21,6 +21,7 @@ export function TasksView() {
   const startTask = useAppStore((s) => s.startTask);
   const claimTask = useAppStore((s) => s.claimTask);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const requireAuth = useRequireAuth();
 
   const [burstKey, setBurstKey] = useState(0);
   const [popDay, setPopDay] = useState<number | null>(null);
@@ -49,6 +50,7 @@ export function TasksView() {
   const checkInState = checkInView(rewards.checkIn, now);
 
   const onCheckIn = () => {
+    if (!requireAuth("Sign in to check in and build your streak")) return;
     const result = checkIn();
     if (!result.ok) {
       toast.error(result.error);
@@ -64,6 +66,7 @@ export function TasksView() {
   };
 
   const onStart = (def: TaskDef) => {
+    if (!requireAuth("Sign in to start missions")) return;
     if (def.id === "telegram") window.open(COMMUNITY.telegramChannelUrl, "_blank", "noopener,noreferrer");
     const result = startTask(def.id);
     if (!result.ok) toast.error(result.error);
@@ -71,6 +74,7 @@ export function TasksView() {
   };
 
   const onClaim = (def: TaskDef): boolean => {
+    if (!requireAuth("Sign in to claim bounties")) return false;
     const result = claimTask(def.id);
     if (!result.ok) {
       toast.error(result.error);
@@ -107,7 +111,7 @@ export function TasksView() {
           popDay={popDay}
           onCheckIn={onCheckIn}
         />
-        <EnvelopeVault guest={guest} />
+        <EnvelopeVault guest={guest} onRequireAuth={() => requireAuth("Sign in to redeem your gift code")} />
         <MissionsList
           views={views}
           guest={guest}
@@ -116,6 +120,7 @@ export function TasksView() {
           onClaim={onClaim}
           onInvite={() => setActiveTab("profile")}
           onGetPlan={() => setActiveTab("vaults")}
+          onAuth={() => requireAuth("Sign in to start missions and claim bounties")}
         />
         <p className="px-1 text-center text-[11px] text-slate-400">
           Sandbox: mission verification is simulated. Rewards are mock balances.

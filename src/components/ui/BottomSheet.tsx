@@ -21,6 +21,8 @@ interface BottomSheetProps {
    * bottom-pinned input. Exposes the usable height as `--sheet-max`.
    */
   keyboardAware?: boolean;
+  /** "dark" deepens the overlay for full-attention flows such as sign-in. */
+  tone?: "default" | "dark";
 }
 
 interface ViewportInset {
@@ -57,11 +59,13 @@ function useKeyboardInset(enabled: boolean): ViewportInset {
  * spring sheet that can be dragged down from the handle to dismiss. Pass
  * `SheetTitle` inside children for the accessible name.
  */
-export function BottomSheet({ open, onClose, children, keyboardAware = false }: BottomSheetProps) {
+export function BottomSheet({ open, onClose, children, keyboardAware = false, tone = "default" }: BottomSheetProps) {
   const controls = useDragControls();
   const inset = useKeyboardInset(keyboardAware && open);
   const reduceMotion = useReducedMotion();
   const contentRef = useRef<HTMLDivElement>(null);
+  /** Radix only restores focus to a Dialog.Trigger; these sheets open from arbitrary buttons. */
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   return (
     <Dialog.Root
@@ -75,7 +79,7 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false }: 
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild forceMount>
               <motion.div
-                className="fixed inset-0 z-[45] bg-slate-950/40 backdrop-blur-[2px]"
+                className={`fixed inset-0 z-[45] ${tone === "dark" ? "bg-slate-950/75 backdrop-blur-sm" : "bg-slate-950/40 backdrop-blur-[2px]"}`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -87,9 +91,15 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false }: 
                 asChild
                 forceMount
                 onOpenAutoFocus={(event) => {
+                  returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
                   // Keep the mobile keyboard closed until the user taps the amount field.
                   event.preventDefault();
                   contentRef.current?.focus({ preventScroll: true });
+                }}
+                onCloseAutoFocus={(event) => {
+                  event.preventDefault();
+                  returnFocus.current?.focus({ preventScroll: true });
+                  returnFocus.current = null;
                 }}
               >
                 <motion.div
@@ -99,7 +109,7 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false }: 
                   className="max-h-[var(--sheet-max,92dvh)] overflow-y-auto overscroll-contain rounded-t-[28px] border border-b-0 border-slate-100 bg-white shadow-2xl outline-none"
                   initial={{ y: "100%" }}
                   animate={{ y: 0 }}
-                  exit={{ y: "100%" }}
+                  exit={{ y: "100%", transition: reduceMotion ? { duration: 0 } : { duration: 0.22, ease: [0.4, 0, 1, 1] } }}
                   transition={reduceMotion ? { duration: 0 } : SPRING}
                   drag="y"
                   dragControls={controls}

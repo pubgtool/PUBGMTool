@@ -1,6 +1,6 @@
-import { REFERRAL } from "@/config/protocol";
+import { AUTH, REFERRAL } from "@/config/protocol";
 
-/** FNV-1a: small, stable, dependency-free. Used only for display identifiers. */
+/** FNV-1a: small, stable, dependency-free. Used for display identifiers and sandbox hashing only. */
 export function fnv1a(text: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
@@ -10,11 +10,34 @@ export function fnv1a(text: string): number {
   return hash >>> 0;
 }
 
-/** Stable 6-digit display ID, e.g. NX-894210. */
-export const accountUid = (userId: string): string => `NX-${100_000 + (fnv1a(`uid:${userId}`) % 900_000)}`;
+const SPAN = 9 * 10 ** (AUTH.uidDigits - 1);
+const FLOOR = 10 ** (AUTH.uidDigits - 1);
 
-/** Stable invite code, e.g. NX7788. */
-export const referralCode = (userId: string): string => `NX${1_000 + (fnv1a(`ref:${userId}`) % 9_000)}`;
+function randomInt(max: number): number {
+  const buffer = new Uint32Array(1);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(buffer);
+  else buffer[0] = Math.floor(Math.random() * 2 ** 32);
+  return (buffer[0] ?? 0) % max;
+}
+
+/** Random numeric ID of AUTH.uidDigits digits that is not in `taken`. */
+export function generateNumericId(taken: ReadonlySet<string>): string {
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const candidate = String(FLOOR + randomInt(SPAN));
+    if (!taken.has(candidate)) return candidate;
+  }
+  return deriveNumericId(String(Date.now()), taken);
+}
+
+/** Deterministic ID from a seed, walking forward past collisions. Used by migrations. */
+export function deriveNumericId(seed: string, taken: ReadonlySet<string>): string {
+  const n = fnv1a(seed) % SPAN;
+  for (let i = 0; i < SPAN; i++) {
+    const candidate = String(FLOOR + ((n + i) % SPAN));
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw new Error("No numeric IDs left");
+}
 
 export const referralLink = (code: string): string => `${REFERRAL.baseUrl}?ref=${code}`;
 

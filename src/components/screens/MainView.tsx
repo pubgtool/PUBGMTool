@@ -24,7 +24,7 @@ import { ENGINE } from "@/config/protocol";
 import { formatAmount, formatRate, formatSignedPct } from "@/lib/format";
 import { useNow } from "@/lib/hooks";
 import { summarizeRewards } from "@/lib/rewards";
-import { selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
+import { TRIAL_VOUCHER_AMOUNT, selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
 import type { VaultPosition, WalletSection } from "@/types/domain";
 
 const MASK = "••••••";
@@ -54,6 +54,7 @@ export function MainView() {
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const setWalletSection = useAppStore((s) => s.setWalletSection);
   const setFocusedTierId = useAppStore((s) => s.setFocusedTierId);
+  const openAuthModal = useAppStore((s) => s.openAuthModal);
 
   const [hidden, setHidden] = useState(false);
   const now = useNow(30_000);
@@ -145,6 +146,26 @@ export function MainView() {
           </motion.button>
         </div>
       </header>
+
+      {user.isGuest && (
+        <motion.button
+          type="button"
+          whileTap={{ scale: 0.98 }}
+          transition={SPRING}
+          onClick={() => openAuthModal("register", "Create a free account to claim your trial voucher")}
+          data-testid="guest-cta"
+          className="flex w-full items-center gap-3 rounded-3xl bg-slate-950 p-4 text-left text-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+        >
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/10">
+            <Ticket className="h-5 w-5 text-amber-300" aria-hidden />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold">Claim {TRIAL_VOUCHER_AMOUNT.toFixed(2)} USDT trial voucher</span>
+            <span className="block text-xs text-slate-300">Create a free account or sign in to start</span>
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+        </motion.button>
+      )}
 
       {/* Hero balance */}
       <section className={`${CARD} relative overflow-hidden p-5`}>

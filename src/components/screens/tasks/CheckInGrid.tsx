@@ -83,10 +83,10 @@ export function CheckInGrid({ view, guest, resetInMs, burstKey, popDay, onCheckI
       <div className="relative mt-4">
         <motion.button
           type="button"
-          whileTap={view.doneToday || guest ? undefined : TAP}
+          whileTap={view.doneToday ? undefined : TAP}
           transition={SPRING}
           onClick={onCheckIn}
-          disabled={view.doneToday || guest}
+          disabled={view.doneToday}
           className="w-full rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:bg-slate-200 disabled:text-slate-500"
         >
           {guest ? (

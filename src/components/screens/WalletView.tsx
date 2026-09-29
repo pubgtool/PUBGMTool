@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowDownLeft, ArrowUpRight, History, Ticket, Wallet, Zap, type LucideIcon } from "lucide-react";
+import { GuestGate } from "@/components/auth/GuestGate";
 import { DepositPanel } from "@/components/screens/wallet/DepositPanel";
 import { HistoryPanel } from "@/components/screens/wallet/HistoryPanel";
 import { WithdrawPanel } from "@/components/screens/wallet/WithdrawPanel";
@@ -23,6 +24,7 @@ export function WalletView() {
   const setSection = useAppStore((s) => s.setWalletSection);
   const total = useAppStore(selectTotalBalance);
   const balances = useAppStore((s) => s.balances);
+  const guest = useAppStore((s) => s.user.isGuest);
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const firstRender = useRef(true);
@@ -148,8 +150,26 @@ export function WalletView() {
         transition={{ duration: 0.18 }}
         className="px-4 pb-4 pt-2"
       >
-        {section === "deposit" && <DepositPanel />}
-        {section === "withdraw" && <WithdrawPanel />}
+        {section === "deposit" &&
+          (guest ? (
+            <GuestGate
+              title="Sign in to deposit"
+              text="Your personal deposit address is created when you sign in. Guests can't deposit."
+              reason="Sign in to deposit"
+            />
+          ) : (
+            <DepositPanel />
+          ))}
+        {section === "withdraw" &&
+          (guest ? (
+            <GuestGate
+              title="Sign in to withdraw"
+              text="Withdrawals go to your verified payout address. Sign in to continue."
+              reason="Sign in to withdraw"
+            />
+          ) : (
+            <WithdrawPanel />
+          ))}
         {section === "history" && <HistoryPanel />}
       </motion.main>
     </div>

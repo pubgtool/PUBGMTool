@@ -1,3 +1,4 @@
+import { AuthModal } from "@/components/auth/AuthModal";
 import { AppProviders } from "@/components/providers/AppProviders";
 import { ToastHost } from "@/components/ui/Toast";
 import { BottomNav } from "@/components/layout/BottomNav";
@@ -10,6 +11,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {children}
         </div>
         <BottomNav />
+        <AuthModal />
       </AppProviders>
       <ToastHost />
     </div>

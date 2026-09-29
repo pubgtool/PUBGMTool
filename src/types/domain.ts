@@ -59,6 +59,13 @@ export type KycStatus = "NONE" | "PENDING" | "VERIFIED" | "REJECTED";
 
 export type UserRole = "user" | "admin";
 
+export type AuthTab = "login" | "register" | "forgot";
+
+export interface SessionState {
+  /** false: the session ends when the browser session does. */
+  remember: boolean;
+}
+
 export interface SecuritySettings {
   twoFactor: boolean;
   paymentPin: boolean;
@@ -110,6 +117,14 @@ export interface PromoCode {
 export interface UserProfile {
   id: string;
   email: string | null;
+  /** Normalised to +digits. Set instead of `email` for phone sign-ups. */
+  phone: string | null;
+  /** Public numeric account ID, e.g. 8942105. Empty for guests. */
+  uid: string;
+  /** Numeric invite code shared with friends. Empty for guests. */
+  referralCode: string;
+  /** UID of the account whose invite code was used at sign-up. */
+  referredBy: string | null;
   displayName: string;
   isGuest: boolean;
   kycStatus: KycStatus;
@@ -178,3 +193,12 @@ export interface AppNotification {
 export type AppTab = "main" | "vaults" | "wallet" | "notifications" | "profile" | "tasks" | "admin";
 export type Language = "en" | "ru";
 export type WalletSection = "deposit" | "withdraw" | "history";
+
+/** Everything that belongs to one signed-in account and is swapped on login/logout. */
+export interface AccountSnapshot {
+  user: UserProfile;
+  balances: WalletBalances;
+  positions: VaultPosition[];
+  transactions: Transaction[];
+  dailyAccrualDay: string;
+}

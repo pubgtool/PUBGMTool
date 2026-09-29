@@ -2,11 +2,12 @@
 
 import { motion } from "framer-motion";
 import { Copy, FlaskConical, Gift, Link2 } from "lucide-react";
+import { GuestGate } from "@/components/auth/GuestGate";
 import { toast } from "@/components/ui/Toast";
 import { REFERRAL } from "@/config/protocol";
 import { copyText } from "@/lib/clipboard";
 import { formatAmount } from "@/lib/format";
-import { referralCode, referralLink } from "@/lib/identity";
+import { referralLink } from "@/lib/identity";
 import { useAppStore } from "@/lib/store";
 
 const TAP = { scale: 0.97 } as const;
@@ -23,19 +24,16 @@ export function ReferralCard() {
 
   if (user.isGuest) {
     return (
-      <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm" aria-label="Invite to earn">
-        <h2 className="flex items-center gap-2 text-sm font-semibold">
-          <Gift className="h-4 w-4 text-slate-400" aria-hidden />
-          Invite &amp; Earn
-        </h2>
-        <p className="mt-2 text-xs text-slate-500">
-          Sign in to get your invite code and earn up to {REFERRAL.tiers[0].ratePct}% commission on your network&apos;s deposits.
-        </p>
-      </section>
+      <GuestGate
+        compact
+        title="Invite & Earn"
+        text={`Sign in to get your invite code and earn up to ${REFERRAL.tiers[0].ratePct}% commission on your network's deposits.`}
+        reason="Sign in to get your invite code"
+      />
     );
   }
 
-  const code = referralCode(user.id);
+  const code = user.referralCode;
   const link = referralLink(code);
 
   return (

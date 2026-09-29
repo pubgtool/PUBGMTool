@@ -1,9 +1,23 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { ENGINE, PERSISTENCE, REFERRAL } from "@/config/protocol";
+import { AUTH, ENGINE, PERSISTENCE, REFERRAL } from "@/config/protocol";
 import { CHECK_IN_CYCLE, CHECK_IN_REWARDS, PROMO_RULES, getTaskDef, seedPromoCodes } from "@/config/rewards";
 import { checkInView, computeTaskBonus, mysteryBonus, normalizeCode, taskView } from "@/lib/rewards";
+import {
+  clearFailures,
+  hashPassword,
+  lockoutRemaining,
+  passwordIssue,
+  recordFailure,
+  verifyPassword,
+  type Credential,
+} from "@/lib/credentials";
+import { buildDemoAccount, DEMO_TIER } from "@/lib/demo";
+import { deriveNumericId, generateNumericId } from "@/lib/identity";
+import { parseIdentifier, type IdentifierKind } from "@/lib/identifiers";
+import { checkCode, consumeCode, issueCode } from "@/lib/passwordReset";
+import { markBrowserSession } from "@/lib/session";
 import { utcDay } from "@/lib/time";
 import {
   MIN_DEPOSIT,
@@ -19,7 +33,9 @@ import {
   shortAddress,
 } from "@/lib/wallet";
 import type {
+  AccountSnapshot,
   AppNotification,
+  AuthTab,
   AppTab,
   FundingSource,
   KycStatus,
@@ -29,6 +45,7 @@ import type {
   PromoCode,
   RewardsState,
   SecuritySettings,
+  SessionState,
   TaskId,
   Transaction,
   TransactionType,
@@ -46,12 +63,10 @@ import type {
 
 export const TRIAL_VOUCHER_AMOUNT: Usd = 50;
 const MAX_AMOUNT: Usd = 1_000_000_000;
-const MIN_PASSWORD_LENGTH = 6;
 /** Offline catch-up ceiling so a stale tab cannot mint unbounded yield. */
 const MAX_CATCH_UP_MS = 30 * ENGINE.msPerDay;
 const MAX_TRANSACTIONS = 200;
 const MAX_NOTIFICATIONS = 100;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SEED_TIME = "2026-09-29T00:00:00.000Z";
 /** Sandbox invitee deposits, cycled so simulated commissions are predictable. */
 const REFERRAL_SAMPLE_DEPOSITS = [100, 250, 500, 1_000] as const;
@@ -75,6 +90,21 @@ export type RewardResult =
   | { ok: true; id: string; amount: number; day?: number; mystery?: number }
   | { ok: false; error: string };
 
+export type RegisterInput = {
+  identifier: string;
+  /** Which tab the user chose; without it the kind is inferred from the text. */
+  kind?: IdentifierKind;
+  password: string;
+  referralCode?: string | null;
+  displayName?: string;
+};
+
+export type LoginInput = { identifier: string; password: string; remember?: boolean };
+
+export type ResetRequestResult =
+  | { ok: true; sandboxCode: string; cooldownUntil: number; expiresAt: number; reused: boolean }
+  | { ok: false; error: string };
+
 export type PromoInput = {
   code: string;
   rewardUsdt: number;
@@ -96,14 +126,6 @@ export type NotificationInput = {
   body: string;
 };
 
-interface AccountSnapshot {
-  user: UserProfile;
-  balances: WalletBalances;
-  positions: VaultPosition[];
-  transactions: Transaction[];
-  dailyAccrualDay: string;
-}
-
 export interface StoreData {
   user: UserProfile;
   balances: WalletBalances;
@@ -118,6 +140,15 @@ export interface StoreData {
   activeTab: AppTab;
   activeLanguage: Language;
   hasSeenAnnouncement: boolean;
+  /** Salted password hashes by account key (email or +phone). */
+  credentials: Record<string, Credential>;
+  session: SessionState;
+  /** Invite code captured from a ?ref= link, offered at registration. */
+  pendingReferral: string | null;
+  /** Transient (not persisted): the global sign-in modal. */
+  isAuthModalOpen: boolean;
+  authModalTab: AuthTab;
+  authModalReason: string | null;
   /** Gift codes shared by every account on this device. */
   promoCodes: PromoCode[];
   /** Transient navigation intent (not persisted): section the Wallet tab opens on. */
@@ -127,9 +158,20 @@ export interface StoreData {
 }
 
 export interface StoreActions {
-  login: (email: string, password: string) => ActionResult;
-  register: (email: string, password: string, displayName?: string) => ActionResult;
+  login: (input: LoginInput) => Promise<ActionResult>;
+  /** Creates the account, credits the trial voucher and signs in. */
+  register: (input: RegisterInput) => Promise<ActionResult>;
+  /** Sandbox: signs in to the preloaded VIP 2 account, creating it on first use. */
+  demoLogin: () => Promise<ActionResult>;
   logout: () => void;
+  /** Sandbox: no message is sent; the code is returned so it can be shown on screen. */
+  requestPasswordReset: (identifier: string, now?: number) => ResetRequestResult;
+  verifyResetCode: (identifier: string, code: string, now?: number) => ActionResult;
+  resetPassword: (input: { identifier: string; code: string; password: string; now?: number }) => Promise<ActionResult>;
+  openAuthModal: (tab?: AuthTab, reason?: string | null) => void;
+  closeAuthModal: () => void;
+  setAuthModalTab: (tab: AuthTab) => void;
+  setPendingReferral: (code: string | null) => void;
   updateKyc: () => ActionResult;
   updatePayoutAddress: (address: string) => ActionResult;
   /** Sandbox: resolves a PENDING verification. */
@@ -183,7 +225,6 @@ const okWith = (id: string): ActionResult => ({ ok: true, id });
 
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 6 });
-const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
 function uid(prefix: string): string {
   const rand =
@@ -248,6 +289,10 @@ function bountyPatch(
 const GUEST_USER: UserProfile = {
   id: "guest",
   email: null,
+  phone: null,
+  uid: "",
+  referralCode: "",
+  referredBy: null,
   displayName: "Guest",
   isGuest: true,
   kycStatus: "NONE",
@@ -331,6 +376,12 @@ function createInitialData(): StoreData {
     activeTab: "main",
     activeLanguage: "en",
     hasSeenAnnouncement: false,
+    credentials: {},
+    session: { remember: true },
+    pendingReferral: null,
+    isAuthModalOpen: false,
+    authModalTab: "login",
+    authModalReason: null,
     promoCodes: seedPromoCodes(),
     walletSection: "deposit",
     focusedTierId: null,
@@ -434,12 +485,15 @@ function settle(s: Settleable, now: number): Settleable | null {
   };
 }
 
+/** Accounts are stored under their normalised email or +phone. */
+const accountKeyOf = (user: UserProfile): string | null => user.email ?? user.phone;
+
 function snapshotAccounts(s: StoreData): StoreData["accounts"] {
-  const email = s.user.email;
-  if (s.user.isGuest || !email) return s.accounts;
+  const key = accountKeyOf(s.user);
+  if (s.user.isGuest || !key) return s.accounts;
   return {
     ...s.accounts,
-    [email]: {
+    [key]: {
       user: s.user,
       balances: s.balances,
       positions: s.positions,
@@ -448,6 +502,53 @@ function snapshotAccounts(s: StoreData): StoreData["accounts"] {
     },
   };
 }
+
+/** Looks a numeric invite code up among the accounts on this device. */
+export function findReferrer(
+  s: Pick<StoreData, "accounts">,
+  code: string,
+): { key: string; user: UserProfile } | null {
+  const value = code.trim();
+  if (!/^\d+$/.test(value)) return null;
+  for (const [key, account] of Object.entries(s.accounts)) {
+    if (account.user.referralCode === value) return { key, user: account.user };
+  }
+  return null;
+}
+
+function takenIds(s: Pick<StoreData, "accounts" | "user">): Set<string> {
+  const taken = new Set<string>([AUTH.demo.uid, AUTH.demo.referralCode]);
+  for (const user of [s.user, ...Object.values(s.accounts).map((a) => a.user)]) {
+    if (user.uid) taken.add(user.uid);
+    if (user.referralCode) taken.add(user.referralCode);
+  }
+  return taken;
+}
+
+const isReserved = (key: string) => key === AUTH.demo.identifier;
+
+/** Patch that switches the session to a stored account; null when it does not exist. */
+function enterAccount(s: StoreState, key: string, remember: boolean): Partial<StoreState> | null {
+  const account = s.accounts[key];
+  if (!account) return null;
+  return {
+    accounts: snapshotAccounts(s),
+    user: account.user,
+    balances: account.balances,
+    positions: account.positions,
+    transactions: account.transactions,
+    dailyAccrualDay: account.dailyAccrualDay,
+    session: { remember },
+    isAuthModalOpen: false,
+    authModalReason: null,
+    notifications: prependNotifications(
+      s.notifications,
+      makeNotification({ kind: "account", title: "Signed in", body: `Welcome back, ${account.user.displayName}.` }),
+    ),
+  };
+}
+
+const GENERIC_LOGIN_ERROR = "Incorrect email/phone or password.";
 
 function validateTier(tier: VipTier, others: VipTier[]): string | null {
   if (!tier.name.trim()) return "Tier name is required.";
@@ -489,6 +590,9 @@ const PERSISTED_KEYS = [
   "activeTab",
   "activeLanguage",
   "hasSeenAnnouncement",
+  "credentials",
+  "session",
+  "pendingReferral",
   "promoCodes",
 ] as const satisfies ReadonlyArray<keyof StoreData>;
 
@@ -499,51 +603,73 @@ export const useAppStore = create<StoreState>()(
 
       /* ---------------- Auth ---------------- */
 
-      login: (email, password) => {
-        const key = normalizeEmail(email);
-        if (!EMAIL_RE.test(key)) return fail("Enter a valid email address.");
-        if (password.length < MIN_PASSWORD_LENGTH)
-          return fail(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      login: async ({ identifier, password, remember = true }) => {
+        const parsed = parseIdentifier(identifier);
+        if (!parsed.ok) return fail(parsed.error);
+        if (!password) return fail("Enter your password.");
 
-        const s = get();
-        if (s.user.email === key) return OK;
-        const account = s.accounts[key];
-        if (!account) return fail("No account found for this email. Register first.");
+        const locked = lockoutRemaining(parsed.key, Date.now());
+        if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
 
-        set({
-          accounts: snapshotAccounts(s),
-          user: account.user,
-          balances: account.balances,
-          positions: account.positions,
-          transactions: account.transactions,
-          dailyAccrualDay: account.dailyAccrualDay,
-          notifications: prependNotifications(
-            s.notifications,
-            makeNotification({
-              kind: "account",
-              title: "Signed in",
-              body: `Welcome back, ${account.user.displayName}.`,
-            }),
-          ),
-        });
+        const before = get();
+        if (accountKeyOf(before.user) === parsed.key) return OK;
+        const credential = before.credentials[parsed.key];
+        if (before.accounts[parsed.key] && !credential)
+          return fail("This account has no password yet. Use Forgot password to set one.");
+
+        // Unknown accounts fail the same way and count toward the lockout, so responses don't reveal which exist.
+        const valid = credential ? await verifyPassword(password, credential) : false;
+        if (!valid) {
+          recordFailure(parsed.key, Date.now());
+          return fail(GENERIC_LOGIN_ERROR);
+        }
+        clearFailures(parsed.key);
+
+        const patch = enterAccount(get(), parsed.key, remember);
+        if (!patch) return fail(GENERIC_LOGIN_ERROR);
+        set(patch);
+        if (!remember) markBrowserSession();
         get().tickYieldEngine();
         return OK;
       },
 
-      register: (email, password, displayName) => {
-        const key = normalizeEmail(email);
-        if (!EMAIL_RE.test(key)) return fail("Enter a valid email address.");
-        if (password.length < MIN_PASSWORD_LENGTH)
-          return fail(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      register: async ({ identifier, kind, password, referralCode, displayName }) => {
+        const parsed = parseIdentifier(identifier, kind);
+        if (!parsed.ok) return fail(parsed.error);
+        const issue = passwordIssue(password);
+        if (issue) return fail(issue);
 
+        const duplicate = `An account with this ${parsed.kind === "email" ? "email" : "phone number"} already exists.`;
+        const s0 = get();
+        if (!s0.user.isGuest) return fail("Sign out before creating another account.");
+        if (isReserved(parsed.key) || s0.accounts[parsed.key]) return fail(duplicate);
+
+        const code = referralCode?.trim() ?? "";
+        if (AUTH.referralRequired && !findReferrer(s0, code)) return fail("Enter a valid referral code.");
+
+        const credential = await hashPassword(password);
+
+        // State may have changed while hashing.
         const s = get();
-        if (s.user.email === key || s.accounts[key]) return fail("An account with this email already exists.");
+        if (!s.user.isGuest) return fail("You're already signed in.");
+        if (s.accounts[parsed.key]) return fail(duplicate);
+        const referrer = code ? findReferrer(s, code) : null;
 
         const now = Date.now();
+        const taken = takenIds(s);
+        const uidValue = generateNumericId(taken);
+        taken.add(uidValue);
+        const inviteCode = generateNumericId(taken);
+
+        const name = displayName?.trim().slice(0, 32);
         const user: UserProfile = {
           id: uid("usr"),
-          email: key,
-          displayName: displayName?.trim() || key.split("@")[0] || "Member",
+          email: parsed.kind === "email" ? parsed.key : null,
+          phone: parsed.kind === "phone" ? parsed.key : null,
+          uid: uidValue,
+          referralCode: inviteCode,
+          referredBy: referrer?.user.uid ?? null,
+          displayName: name || (parsed.kind === "email" ? (parsed.key.split("@")[0] ?? "Member") : `Member${parsed.key.slice(-4)}`),
           isGuest: false,
           kycStatus: "NONE",
           payoutAddress: null,
@@ -558,11 +684,25 @@ export const useAppStore = create<StoreState>()(
         ];
         const dailyAccrualDay = utcDay(now);
 
+        const accounts = { ...s.accounts };
+        if (referrer) {
+          const snapshot = accounts[referrer.key];
+          if (snapshot) {
+            accounts[referrer.key] = {
+              ...snapshot,
+              user: { ...snapshot.user, referral: { ...snapshot.user.referral, invites: snapshot.user.referral.invites + 1 } },
+            };
+          }
+        }
+        accounts[parsed.key] = { user, balances, positions: [], transactions, dailyAccrualDay };
+
         set({
-          accounts: {
-            ...snapshotAccounts(s),
-            [key]: { user, balances, positions: [], transactions, dailyAccrualDay },
-          },
+          accounts,
+          credentials: { ...s.credentials, [parsed.key]: credential },
+          session: { remember: true },
+          pendingReferral: null,
+          isAuthModalOpen: false,
+          authModalReason: null,
           user,
           balances,
           positions: [],
@@ -578,12 +718,90 @@ export const useAppStore = create<StoreState>()(
             makeNotification({
               kind: "account",
               title: "Account created",
-              body: `Welcome to NEXUS, ${user.displayName}.`,
+              body: `Welcome to NEXUS, ${user.displayName}. Your UID is ${user.uid}.`,
             }),
           ),
         });
         return okWith(user.id);
       },
+
+      demoLogin: async () => {
+        const key = AUTH.demo.identifier;
+        const s0 = get();
+        if (accountKeyOf(s0.user) === key) return OK;
+        const existing = s0.accounts[key];
+        if (existing && existing.user.id !== "usr_demo") return fail("The demo account is unavailable.");
+
+        const credential = s0.credentials[key] ?? (await hashPassword(AUTH.demo.password));
+        const s = get();
+        const created = !s.accounts[key];
+        const base: StoreState = {
+          ...s,
+          credentials: { ...s.credentials, [key]: credential },
+          accounts: created ? { ...s.accounts, [key]: buildDemoAccount(Date.now()) } : s.accounts,
+        };
+        const patch = enterAccount(base, key, true);
+        if (!patch) return fail("The demo account is unavailable.");
+        set({
+          ...patch,
+          credentials: base.credentials,
+          tiers: created
+            ? s.tiers.map((t) => (t.id === DEMO_TIER.id ? { ...t, filled: Math.min(t.capacity, t.filled + DEMO_TIER.filled) } : t))
+            : s.tiers,
+        });
+        get().tickYieldEngine();
+        return OK;
+      },
+
+      requestPasswordReset: (identifier, now = Date.now()) => {
+        const parsed = parseIdentifier(identifier);
+        if (!parsed.ok) return fail(parsed.error);
+        if (!get().accounts[parsed.key]) return fail("No account found for that email or phone number.");
+        const issued = issueCode(parsed.key, now);
+        if (!issued.ok) return fail(issued.error);
+        return {
+          ok: true,
+          sandboxCode: issued.code,
+          cooldownUntil: issued.cooldownUntil,
+          expiresAt: issued.expiresAt,
+          reused: issued.reused,
+        };
+      },
+
+      verifyResetCode: (identifier, code, now = Date.now()) => {
+        const parsed = parseIdentifier(identifier);
+        if (!parsed.ok) return fail(parsed.error);
+        if (!new RegExp(`^\\d{${AUTH.otp.length}}$`).test(code)) return fail(`Enter the ${AUTH.otp.length}-digit code.`);
+        const checked = checkCode(parsed.key, code, now);
+        return checked.ok ? OK : fail(checked.error);
+      },
+
+      resetPassword: async ({ identifier, code, password, now = Date.now() }) => {
+        const parsed = parseIdentifier(identifier);
+        if (!parsed.ok) return fail(parsed.error);
+        const issue = passwordIssue(password);
+        if (issue) return fail(issue);
+        if (!get().accounts[parsed.key]) return fail("No account found for that email or phone number.");
+
+        const checked = checkCode(parsed.key, code, now);
+        if (!checked.ok) return fail(checked.error);
+
+        const credential = await hashPassword(password);
+        const s = get();
+        set({ credentials: { ...s.credentials, [parsed.key]: credential } });
+        consumeCode(parsed.key);
+        clearFailures(parsed.key);
+        return OK;
+      },
+
+      openAuthModal: (tab = "login", reason = null) =>
+        set({ isAuthModalOpen: true, authModalTab: tab, authModalReason: reason }),
+
+      closeAuthModal: () => set({ isAuthModalOpen: false, authModalReason: null }),
+
+      setAuthModalTab: (authModalTab) => set({ authModalTab }),
+
+      setPendingReferral: (pendingReferral) => set({ pendingReferral }),
 
       logout: () => {
         const s = get();
@@ -595,7 +813,12 @@ export const useAppStore = create<StoreState>()(
           positions: [],
           transactions: [],
           dailyAccrualDay: utcDay(Date.now()),
+          session: { remember: true },
           activeTab: "main",
+          walletSection: "deposit",
+          focusedTierId: null,
+          isAuthModalOpen: false,
+          authModalReason: null,
         });
       },
 
@@ -713,6 +936,7 @@ export const useAppStore = create<StoreState>()(
       /* ---------------- Wallet ---------------- */
 
       deposit: (amount, network = "trc20") => {
+        if (get().user.isGuest) return fail("Sign in to deposit.");
         const value = parseAmount(amount);
         if (value === null) return fail("Enter a valid amount.");
         if (value < MIN_DEPOSIT) return fail(`Minimum deposit is ${fmt(MIN_DEPOSIT)} USDT.`);
@@ -739,6 +963,7 @@ export const useAppStore = create<StoreState>()(
       },
 
       withdraw: (amount, address, network) => {
+        if (get().user.isGuest) return fail("Sign in to withdraw.");
         const value = parseAmount(amount);
         if (value === null) return fail("Enter a valid amount.");
         const to = address.trim();
@@ -910,6 +1135,7 @@ export const useAppStore = create<StoreState>()(
       /* ---------------- Staking engine ---------------- */
 
       stakeInVault: (tierId, amount, source = "balance") => {
+        if (get().user.isGuest) return fail("Sign in to activate a VIP plan.");
         const value = parseAmount(amount);
         if (value === null) return fail("Enter a valid amount.");
 
@@ -1304,6 +1530,39 @@ export const useAppStore = create<StoreState>()(
             for (const account of Object.values(accounts)) {
               if (account.user && typeof account.user === "object") account.user = withRewards(account.user);
             }
+          }
+        }
+        // v5 -> v6: numeric account IDs and invite codes, phone sign-ups, guests hold no funds.
+        if (version < 6) {
+          const accounts = state.accounts as Record<string, { user?: Record<string, unknown> }> | undefined;
+
+          const taken = new Set<string>([AUTH.demo.uid, AUTH.demo.referralCode]);
+          const assigned = new Map<string, { uid: string; code: string }>();
+          const withIdentity = (user: Record<string, unknown>) => {
+            if (user.isGuest) return { phone: null, uid: "", referralCode: "", referredBy: null, ...user };
+            const id = String(user.id);
+            let entry = assigned.get(id);
+            if (!entry) {
+              const uidValue = deriveNumericId(`uid:${id}`, taken);
+              taken.add(uidValue);
+              const code = deriveNumericId(`ref:${id}`, taken);
+              taken.add(code);
+              entry = { uid: uidValue, code };
+              assigned.set(id, entry);
+            }
+            return { phone: null, uid: entry.uid, referralCode: entry.code, referredBy: null, ...user };
+          };
+          if (state.user && typeof state.user === "object") {
+            const user = state.user as Record<string, unknown>;
+            state.user = withIdentity(user);
+            if (user.isGuest) {
+              state.balances = emptyBalances();
+              state.positions = [];
+              state.transactions = [];
+            }
+          }
+          for (const account of Object.values(accounts ?? {})) {
+            if (account.user) account.user = withIdentity(account.user);
           }
         }
         return state as unknown as StoreState;

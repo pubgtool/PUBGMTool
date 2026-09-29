@@ -7,7 +7,7 @@ import { CalendarDays, LogOut, ShieldAlert, ShieldCheck, ShieldX, User, UserCog,
 import { toast } from "@/components/ui/Toast";
 import { ADMIN } from "@/config/protocol";
 import { useChatStore } from "@/lib/chat";
-import { accountUid, initialsOf } from "@/lib/identity";
+import { initialsOf } from "@/lib/identity";
 import { useAppStore } from "@/lib/store";
 import type { KycStatus } from "@/types/domain";
 
@@ -28,6 +28,7 @@ export function IdentityCard({ onOpenKyc }: { onOpenKyc: () => void }) {
   const positions = useAppStore((s) => s.positions);
   const logout = useAppStore((s) => s.logout);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const openAuthModal = useAppStore((s) => s.openAuthModal);
 
   const vipLevel = useMemo(
     () => positions.reduce((max, p) => (p.status === "active" ? Math.max(max, p.tierLevel) : max), 0),
@@ -55,6 +56,28 @@ export function IdentityCard({ onOpenKyc }: { onOpenKyc: () => void }) {
         <p className="mt-4 rounded-2xl bg-slate-50 px-3.5 py-3 text-xs text-slate-500">
           Sign in to unlock your invite link, identity verification and security settings.
         </p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <motion.button
+            type="button"
+            whileTap={TAP}
+            transition={SPRING}
+            onClick={() => openAuthModal("login", "Sign in to your account")}
+            data-testid="profile-signin"
+            className="rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold outline-none transition-colors hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-slate-900"
+          >
+            Sign In
+          </motion.button>
+          <motion.button
+            type="button"
+            whileTap={TAP}
+            transition={SPRING}
+            onClick={() => openAuthModal("register", "Create an account to get your UID and trial voucher")}
+            data-testid="profile-register"
+            className="rounded-2xl bg-slate-950 py-3 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+          >
+            Create Account
+          </motion.button>
+        </div>
       </section>
     );
   }
@@ -88,7 +111,7 @@ export function IdentityCard({ onOpenKyc }: { onOpenKyc: () => void }) {
             </motion.button>
           </div>
           <p data-testid="profile-uid" className="mt-0.5 whitespace-nowrap font-mono text-xs tabular-nums text-slate-500">
-            UID: {accountUid(user.id)}
+            UID: {user.uid}
           </p>
           <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
             <CalendarDays className="h-3.5 w-3.5 shrink-0" aria-hidden />

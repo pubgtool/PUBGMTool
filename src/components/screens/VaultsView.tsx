@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Plus, Ticket } from "lucide-react";
 import { PlanActivationSheet, type ActivationRequest } from "@/components/screens/PlanActivationSheet";
 import { formatAmount, formatRate } from "@/lib/format";
+import { useRequireAuth } from "@/lib/hooks";
 import { useAppStore } from "@/lib/store";
 import {
   PROJECTION_DAYS,
@@ -27,6 +28,7 @@ export function VaultsView() {
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const setWalletSection = useAppStore((s) => s.setWalletSection);
   const reduceMotion = useReducedMotion();
+  const requireAuth = useRequireAuth();
 
   const [request, setRequest] = useState<ActivationRequest | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
@@ -232,7 +234,9 @@ export function VaultsView() {
                   type="button"
                   whileTap={TAP}
                   transition={SPRING}
-                  onClick={() => setRequest({ tierId: tier.id, source: "balance" })}
+                  onClick={() => {
+                    if (requireAuth("Create an account to activate a VIP plan", "register")) setRequest({ tierId: tier.id, source: "balance" });
+                  }}
                   className="w-full rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
                 >
                   Unlock VIP Tier

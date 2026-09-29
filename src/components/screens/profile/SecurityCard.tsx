@@ -41,6 +41,7 @@ const ROWS: readonly Row[] = [
 export function SecurityCard() {
   const user = useAppStore((s) => s.user);
   const setSecurityPreference = useAppStore((s) => s.setSecurityPreference);
+  const openAuthModal = useAppStore((s) => s.openAuthModal);
 
   return (
     <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm" aria-label="Account security">
@@ -74,9 +75,17 @@ export function SecurityCard() {
         })}
       </ul>
       <p className="mt-1 text-[11px] text-slate-400">
-        {user.isGuest
-          ? "Sign in to manage security settings."
-          : "Sandbox preferences: they're saved to your account but not enforced at sign-in or withdrawal yet."}
+        {user.isGuest ? (
+          <button
+            type="button"
+            onClick={() => openAuthModal("login", "Sign in to manage security settings")}
+            className="rounded-md font-semibold text-slate-600 underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
+          >
+            Sign in to manage security settings.
+          </button>
+        ) : (
+          "Sandbox preferences: they're saved to your account but not enforced at sign-in or withdrawal yet."
+        )}
       </p>
     </section>
   );

@@ -16,7 +16,7 @@ const SANDBOX_CODES = ["LUCKY888", "SHENZHOU2026"] as const;
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-export function EnvelopeVault({ guest }: { guest: boolean }) {
+export function EnvelopeVault({ guest, onRequireAuth }: { guest: boolean; onRequireAuth: () => void }) {
   const claimPromoCode = useAppStore((s) => s.claimPromoCode);
 
   const [text, setText] = useState("");
@@ -64,7 +64,11 @@ export function EnvelopeVault({ guest }: { guest: boolean }) {
   };
 
   const claim = async () => {
-    if (busy || guest) return;
+    if (busy) return;
+    if (guest) {
+      onRequireAuth();
+      return;
+    }
     if (!text) {
       setError("Enter a gift code.");
       return;
@@ -148,13 +152,13 @@ export function EnvelopeVault({ guest }: { guest: boolean }) {
             {error}
           </p>
         )}
-        {guest && <p className="mt-2 text-xs text-slate-500">Sign in to redeem gift codes.</p>}
+        {guest && <p className="mt-2 text-xs text-slate-500">Sign in to redeem gift codes. You can enter a code first.</p>}
 
         <motion.button
           type="submit"
-          whileTap={busy || guest ? undefined : TAP}
+          whileTap={busy ? undefined : TAP}
           transition={SPRING}
-          disabled={busy || guest}
+          disabled={busy}
           aria-busy={busy}
           className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 py-3.5 text-sm font-semibold text-slate-950 outline-none transition-opacity hover:opacity-95 focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 disabled:from-slate-200 disabled:to-slate-200 disabled:text-slate-400"
         >
