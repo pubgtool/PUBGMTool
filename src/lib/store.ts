@@ -16,6 +16,7 @@ import type {
   VaultPosition,
   VipTier,
   WalletBalances,
+  WalletSection,
 } from "@/types/domain";
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +77,10 @@ export interface StoreData {
   activeTab: AppTab;
   activeLanguage: Language;
   hasSeenAnnouncement: boolean;
+  /** Transient navigation intent (not persisted): section the Wallet tab opens on. */
+  walletSection: WalletSection;
+  /** Transient navigation intent (not persisted): tier the Vaults tab highlights. */
+  focusedTierId: string | null;
 }
 
 export interface StoreActions {
@@ -106,6 +111,8 @@ export interface StoreActions {
   setActiveTab: (tab: AppTab) => void;
   setActiveLanguage: (language: Language) => void;
   setHasSeenAnnouncement: (seen?: boolean) => void;
+  setWalletSection: (section: WalletSection) => void;
+  setFocusedTierId: (id: string | null) => void;
 }
 
 export type StoreState = StoreData & StoreActions;
@@ -239,9 +246,11 @@ function createInitialData(): StoreData {
     transactions: [],
     notifications: seedNotifications(),
     accounts: {},
-    activeTab: "terminal",
+    activeTab: "main",
     activeLanguage: "en",
     hasSeenAnnouncement: false,
+    walletSection: "deposit",
+    focusedTierId: null,
   };
 }
 
@@ -441,7 +450,7 @@ export const useAppStore = create<StoreState>()(
           positions: [],
           transactions: [],
           dailyAccrualDay: utcDay(Date.now()),
-          activeTab: "terminal",
+          activeTab: "main",
         });
       },
 
@@ -809,6 +818,8 @@ export const useAppStore = create<StoreState>()(
       setActiveTab: (activeTab) => set({ activeTab }),
       setActiveLanguage: (activeLanguage) => set({ activeLanguage }),
       setHasSeenAnnouncement: (seen = true) => set({ hasSeenAnnouncement: seen }),
+      setWalletSection: (walletSection) => set({ walletSection }),
+      setFocusedTierId: (focusedTierId) => set({ focusedTierId }),
     }),
     {
       name: PERSISTENCE.storageKey,
@@ -818,8 +829,12 @@ export const useAppStore = create<StoreState>()(
       skipHydration: true,
       partialize: (s) =>
         Object.fromEntries(PERSISTED_KEYS.map((k) => [k, s[k]])) as unknown as StoreState,
-      migrate: (persisted, version) =>
-        (version === PERSISTENCE.version ? persisted : {}) as StoreState,
+      migrate: (persisted, version) => {
+        const state = (persisted ?? {}) as Record<string, unknown>;
+        // v1 -> v2: the "terminal" tab was renamed "main".
+        if (version < 2 && state.activeTab === "terminal") state.activeTab = "main";
+        return state as unknown as StoreState;
+      },
     },
   ),
 );

@@ -105,5 +105,6 @@ export interface AppNotification {
   read: boolean;
 }
 
-export type AppTab = "terminal" | "vaults" | "wallet" | "notifications" | "profile" | "admin";
+export type AppTab = "main" | "vaults" | "wallet" | "notifications" | "profile" | "admin";
 export type Language = "en" | "ru";
+export type WalletSection = "deposit" | "withdraw" | "history";

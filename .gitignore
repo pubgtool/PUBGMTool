@@ -26,3 +26,6 @@ dist-ssr
 .next
 next-env.d.ts
 *.tsbuildinfo
+
+# Agent attachments
+.hoplite/attachments/

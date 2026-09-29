@@ -1,11 +1,12 @@
 "use client";
 
+import { NAV_ITEMS } from "@/components/layout/BottomNav";
+import { MainView } from "@/components/screens/MainView";
 import { formatUsdt } from "@/lib/format";
 import { selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
-import { NAV_ITEMS } from "@/components/layout/BottomNav";
 
-/** Live summary per tab; replaced by the full screens in later steps. */
-export function TabOutlet() {
+/** Live summary for tabs whose full screen has not shipped yet. */
+function PlaceholderView() {
   const tab = useAppStore((s) => s.activeTab);
   const total = useAppStore(selectTotalBalance);
   const balances = useAppStore((s) => s.balances);
@@ -13,7 +14,7 @@ export function TabOutlet() {
   const tiers = useAppStore((s) => s.tiers);
   const user = useAppStore((s) => s.user);
 
-  const title = NAV_ITEMS.find((i) => i.tab === tab)?.label ?? "Terminal";
+  const title = NAV_ITEMS.find((i) => i.tab === tab)?.label ?? "Main";
   const rows: Array<[string, string]> =
     tab === "vaults"
       ? tiers.map((t) => [t.name, `${t.dailyRatePct}% daily${t.isActive ? "" : " · closed"}`])
@@ -44,4 +45,9 @@ export function TabOutlet() {
       </dl>
     </main>
   );
+}
+
+export function TabOutlet() {
+  const tab = useAppStore((s) => s.activeTab);
+  return tab === "main" ? <MainView /> : <PlaceholderView />;
 }
