@@ -1,5 +1,6 @@
 import { CHECK_IN_CYCLE, COMPUTE_BONUS_MIN, COMPUTE_BONUS_PCT, MYSTERY_BONUSES, PROMO_RULES, TASKS, type TaskDef } from "@/config/rewards";
 import { fnv1a } from "@/lib/identity";
+import { dailyOutputOf } from "@/lib/nodes";
 import { MS_PER_DAY, utcDay } from "@/lib/time";
 import type { CheckInState, TaskProgress, UserProfile, VaultPosition } from "@/types/domain";
 
@@ -37,7 +38,7 @@ export function checkInView(ci: CheckInState, now: number): CheckInView {
 /** One day of income across active plans, times the bonus share; never below the floor. */
 export function computeTaskBonus(positions: readonly VaultPosition[]): number {
   const daily = positions.reduce(
-    (sum, p) => (p.status === "active" ? sum + p.principal * (p.dailyRatePct / 100) : sum),
+    (sum, p) => (p.status === "active" ? sum + dailyOutputOf(p) : sum),
     0,
   );
   return Math.max(COMPUTE_BONUS_MIN, round2((daily * COMPUTE_BONUS_PCT) / 100));

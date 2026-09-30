@@ -5,8 +5,8 @@ import type { AccountSnapshot, Transaction, TransactionType, UserProfile, VaultP
 
 const DEMO_PAYOUT = "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE";
 const DEMO_ID = "usr_demo";
-const STAKE = 1_000;
-const DAILY_RATE = 1.8;
+const STAKE = 500;
+const DAILY_RATE = 2.8;
 const HISTORY_DAYS = 5;
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -43,9 +43,9 @@ export function buildDemoAccount(now: number): AccountSnapshot {
     ...extra,
   });
 
-  const dailyIncome = STAKE * (DAILY_RATE / 100);
+  const dailyIncome = Math.round(STAKE * DAILY_RATE * 1e4) / 1e6;
   const ledger: Transaction[] = [
-    tx("deposit", 1_400, openedAt - 3_600_000, {
+    tx("deposit", 1_000, openedAt - 3_600_000, {
       network,
       address: depositAddressFor(DEMO_ID, network),
       txHash: mockTxHash(network),
@@ -83,6 +83,9 @@ export function buildDemoAccount(now: number): AccountSnapshot {
     tierLevel: 2,
     principal: STAKE,
     dailyRatePct: DAILY_RATE,
+    dailyOutput: dailyIncome,
+    pending: 0,
+    voucherPortion: 0,
     fundedBy: "balance",
     openedAt: iso(openedAt),
     lastAccruedAt: iso(today),
@@ -129,5 +132,5 @@ export function buildDemoAccount(now: number): AccountSnapshot {
   };
 }
 
-/** How much the demo position occupies in the shared tier capacity. */
-export const DEMO_TIER = { id: "vip-2", filled: STAKE } as const;
+/** The level the demo node sits in, so the shared node count can include it once. */
+export const DEMO_TIER = { id: "vip-2" } as const;

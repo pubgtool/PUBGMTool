@@ -20,7 +20,20 @@ import { canWithdraw, dailyLimitFor, getCountries, nextTier, remainingToday } fr
 import { parseIdentifier, type IdentifierKind } from "@/lib/identifiers";
 import { checkCode, consumeCode, issueCode } from "@/lib/passwordReset";
 import { markBrowserSession } from "@/lib/session";
-import { utcDay } from "@/lib/time";
+import { MIN_COLLECT_USDT, seedTiers } from "@/config/nodes";
+import {
+  BLOCK_MESSAGES,
+  accruePositions,
+  currentNode,
+  pendingOf,
+  quoteAllocation,
+  startOfUtcDay,
+  tierDailyOutput,
+  totalPending,
+  voucherPortionOf,
+  type BlockReason,
+} from "@/lib/nodes";
+import { MS_PER_DAY, utcDay } from "@/lib/time";
 import {
   MIN_DEPOSIT,
   MIN_WITHDRAWAL,
@@ -39,7 +52,6 @@ import type {
   AppNotification,
   AuthTab,
   AppTab,
-  FundingSource,
   KycDocumentType,
   KycSubmission,
   Language,
@@ -124,13 +136,25 @@ export type PromoInput = {
   expiresAt?: string | null;
 };
 
-export type TierInput = Pick<
-  VipTier,
-  "name" | "dailyRatePct" | "minDeposit" | "maxDeposit" | "capacity"
-> &
-  Partial<Pick<VipTier, "level" | "isActive">>;
+export type TierInput = Pick<VipTier, "title" | "feeUsdt" | "dailyRatePct" | "hashrateTh" | "minKycTier" | "capacity"> &
+  Partial<Pick<VipTier, "level" | "name" | "isActive" | "durationDays" | "fixedDailyUsdt" | "activeNodes">>;
 
 export type TierPatch = Partial<Omit<VipTier, "id">>;
+
+export type NodeOptions = { useVoucher?: boolean };
+
+export type AllocationResult =
+  | { ok: true; id: string; kind: "activate" | "upgrade"; level: number; charged: number }
+  | { ok: false; error: string; reason?: BlockReason | "funds"; shortfall?: number };
+
+export type CollectResult = { ok: true; amount: number } | { ok: false; error: string };
+
+/** Emitted whenever output reaches the wallet, so any open screen can celebrate it. */
+export interface DistributionEvent {
+  id: number;
+  amount: number;
+  source: "auto" | "manual";
+}
 
 export type NotificationInput = {
   kind: NotificationKind;
@@ -161,6 +185,8 @@ export interface StoreData {
   isAuthModalOpen: boolean;
   /** Transient (not persisted): the KYC center. */
   isKycModalOpen: boolean;
+  /** Transient (not persisted): the latest distribution, for celebration UI. */
+  distribution: DistributionEvent | null;
   authModalTab: AuthTab;
   authModalReason: string | null;
   /** Gift codes shared by every account on this device. */
@@ -207,7 +233,10 @@ export interface StoreActions {
   deleteTier: (id: string) => ActionResult;
   toggleTierStatus: (id: string) => ActionResult;
 
-  stakeInVault: (tierId: string, amount: number, source?: FundingSource) => ActionResult;
+  /** Allocates a node, or upgrades the current one paying only the difference. */
+  allocateNode: (tierId: string, options?: NodeOptions, now?: number) => AllocationResult;
+  /** Moves the pending compute output into the wallet. */
+  collectOutput: (now?: number) => CollectResult;
   unstakePosition: (positionId: string) => ActionResult;
   tickYieldEngine: (now?: number) => void;
 
@@ -330,29 +359,6 @@ const emptyBalances = (): WalletBalances => ({
   dailyAccrued: 0,
 });
 
-function seedTiers(): VipTier[] {
-  const rows: Array<[string, number, number, number, number, number]> = [
-    // name, daily %, min, max, capacity, filled
-    ["VIP 1", 1.2, 10, 500, 500_000, 184_200],
-    ["VIP 2", 1.8, 500, 2_500, 1_000_000, 412_750],
-    ["VIP 3", 2.4, 2_500, 10_000, 2_000_000, 731_400],
-    ["VIP 4", 3.0, 10_000, 50_000, 3_500_000, 1_206_000],
-    ["VIP 5", 3.6, 50_000, 200_000, 5_000_000, 1_842_500],
-    ["VIP 6", 4.2, 200_000, 1_000_000, 10_000_000, 3_120_000],
-  ];
-  return rows.map(([name, dailyRatePct, minDeposit, maxDeposit, capacity, filled], i) => ({
-    id: `vip-${i + 1}`,
-    level: i + 1,
-    name,
-    dailyRatePct,
-    minDeposit,
-    maxDeposit,
-    capacity,
-    filled,
-    isActive: true,
-  }));
-}
-
 function seedNotifications(): AppNotification[] {
   return [
     {
@@ -400,6 +406,7 @@ function createInitialData(): StoreData {
     pendingReferral: null,
     isAuthModalOpen: false,
     isKycModalOpen: false,
+    distribution: null,
     authModalTab: "login",
     authModalReason: null,
     promoCodes: seedPromoCodes(),
@@ -469,38 +476,82 @@ function settlePending(
   return completed.length > 0 ? { transactions, completed } : null;
 }
 
+interface SettleOutcome {
+  patch: Settleable;
+  /** Output that reached the wallet because a cycle ended. */
+  credited: number;
+  expired: VaultPosition[];
+}
+
 /**
- * Accrues yield on every active position up to `now` and credits it to the
- * available balance. Returns null when nothing changed.
+ * Advances every node to `now`. Output from a finished UTC cycle is credited to
+ * the wallet; today's stays pending until 00:00 UTC or a manual collect.
+ * Returns null when nothing changed.
  */
-function settle(s: Settleable, now: number): Settleable | null {
+function settle(s: Settleable, now: number): SettleOutcome | null {
   const day = utcDay(now);
-  const stamp = new Date(now).toISOString();
-  const rewards: Array<{ position: VaultPosition; reward: number }> = [];
-  let earned = 0;
+  const dayRolled = day !== s.dailyAccrualDay;
+  const result = accruePositions(s.positions, now, dayRolled, MAX_CATCH_UP_MS);
+  if (!result.changed && !dayRolled) return null;
 
-  const positions = s.positions.map((p) => {
-    if (p.status !== "active") return p;
-    const elapsed = Math.min(now - Date.parse(p.lastAccruedAt), MAX_CATCH_UP_MS);
-    if (!(elapsed > 0)) return p;
-    const reward = p.principal * (p.dailyRatePct / 100) * (elapsed / ENGINE.msPerDay);
-    earned += reward;
-    rewards.push({ position: p, reward });
-    return { ...p, accrued: p.accrued + reward, lastAccruedAt: stamp };
-  });
-
-  if (earned === 0 && day === s.dailyAccrualDay) return null;
-
-  const dailyBase = day === s.dailyAccrualDay ? s.balances.dailyAccrued : 0;
+  const credited = result.credited.reduce((sum, c) => sum + c.amount, 0);
+  const boundary = startOfUtcDay(now);
+  const transactions = recordEarnings(
+    s.transactions,
+    result.credited.map((c) => ({ position: c.position, reward: c.amount })),
+    utcDay(boundary - 1),
+    new Date(boundary).toISOString(),
+  );
   return {
-    positions,
-    dailyAccrualDay: day,
-    transactions: recordEarnings(s.transactions, rewards, day, stamp),
-    balances: {
-      ...s.balances,
-      available: s.balances.available + earned,
-      totalEarned: s.balances.totalEarned + earned,
-      dailyAccrued: dailyBase + earned,
+    credited,
+    expired: result.expired,
+    patch: {
+      positions: result.positions,
+      dailyAccrualDay: day,
+      transactions,
+      balances: {
+        ...s.balances,
+        available: s.balances.available + credited,
+        totalEarned: s.balances.totalEarned + credited,
+        dailyAccrued: dayRolled ? 0 : s.balances.dailyAccrued,
+      },
+    },
+  };
+}
+
+let distributionSeq = 0;
+const nextDistribution = (amount: number, source: DistributionEvent["source"]): DistributionEvent => ({
+  id: ++distributionSeq,
+  amount,
+  source,
+});
+
+/** Moves pending output (optionally only one node's) into the wallet, today's cycle. */
+function collectPending(
+  s: Pick<StoreData, "balances" | "positions" | "transactions">,
+  now: number,
+  onlyId?: string,
+): { patch: Pick<StoreData, "balances" | "positions" | "transactions">; amount: number } {
+  const rows: Array<{ position: VaultPosition; reward: number }> = [];
+  let amount = 0;
+  const positions = s.positions.map((p) => {
+    const pending = pendingOf(p);
+    if (pending <= 0 || (onlyId && p.id !== onlyId)) return p;
+    amount += pending;
+    rows.push({ position: p, reward: pending });
+    return { ...p, pending: 0 };
+  });
+  return {
+    amount,
+    patch: {
+      positions,
+      transactions: recordEarnings(s.transactions, rows, utcDay(now), new Date(now).toISOString()),
+      balances: {
+        ...s.balances,
+        available: s.balances.available + amount,
+        totalEarned: s.balances.totalEarned + amount,
+        dailyAccrued: s.balances.dailyAccrued + amount,
+      },
     },
   };
 }
@@ -578,15 +629,21 @@ const GENERIC_LOGIN_ERROR = "Incorrect email/phone or password.";
 
 function validateTier(tier: VipTier, others: VipTier[]): string | null {
   if (!tier.name.trim()) return "Tier name is required.";
-  if (!Number.isInteger(tier.level) || tier.level < 1) return "Tier level must be a whole number ≥ 1.";
+  if (!tier.title.trim()) return "Tier title is required.";
+  if (!Number.isInteger(tier.level) || tier.level < 0) return "Tier level must be a whole number ≥ 0.";
   if (others.some((t) => t.level === tier.level)) return `A tier with level ${tier.level} already exists.`;
-  if (!Number.isFinite(tier.dailyRatePct) || tier.dailyRatePct <= 0 || tier.dailyRatePct > 100)
-    return "Daily rate must be greater than 0% and at most 100%.";
-  if (![tier.minDeposit, tier.maxDeposit, tier.capacity].every(Number.isFinite) || tier.minDeposit <= 0)
-    return "Deposit limits and capacity must be positive numbers.";
-  if (tier.maxDeposit < tier.minDeposit) return "Maximum deposit cannot be below the minimum.";
-  if (tier.capacity < tier.minDeposit) return "Capacity cannot be below the minimum deposit.";
-  if (tier.capacity < tier.filled) return `Capacity cannot be below the ${fmt(tier.filled)} USDT already invested.`;
+  if (!Number.isFinite(tier.feeUsdt) || tier.feeUsdt < 0) return "Allocation fee can't be negative.";
+  if (!Number.isFinite(tier.dailyRatePct) || tier.dailyRatePct < 0 || tier.dailyRatePct > 100)
+    return "Daily distribution must be between 0% and 100%.";
+  if (tier.fixedDailyUsdt === undefined && tier.feeUsdt > 0 && tier.dailyRatePct <= 0)
+    return "A paid node needs a daily distribution above 0%.";
+  if (tier.fixedDailyUsdt !== undefined && !(tier.fixedDailyUsdt > 0)) return "Fixed daily output must be above 0.";
+  if (tier.durationDays !== undefined && (!Number.isInteger(tier.durationDays) || tier.durationDays < 1))
+    return "Duration must be a whole number of days.";
+  if (!Number.isFinite(tier.hashrateTh) || tier.hashrateTh < 0) return "Capacity can't be negative.";
+  if (![0, 1, 2].includes(tier.minKycTier)) return "Minimum verification level must be 0, 1 or 2.";
+  if (!Number.isInteger(tier.capacity) || tier.capacity < 1) return "Node slots must be a whole number ≥ 1.";
+  if (tier.capacity < tier.activeNodes) return `Node slots can't be below the ${fmt(tier.activeNodes)} nodes already active.`;
   return null;
 }
 
@@ -773,7 +830,7 @@ export const useAppStore = create<StoreState>()(
           ...patch,
           credentials: base.credentials,
           tiers: created
-            ? s.tiers.map((t) => (t.id === DEMO_TIER.id ? { ...t, filled: Math.min(t.capacity, t.filled + DEMO_TIER.filled) } : t))
+            ? s.tiers.map((t) => (t.id === DEMO_TIER.id ? { ...t, activeNodes: Math.min(t.capacity, t.activeNodes + 1) } : t))
             : s.tiers,
         });
         get().tickYieldEngine();
@@ -846,6 +903,7 @@ export const useAppStore = create<StoreState>()(
           focusedTierId: null,
           isAuthModalOpen: false,
           isKycModalOpen: false,
+          distribution: null,
           authModalReason: null,
         });
       },
@@ -1121,16 +1179,21 @@ export const useAppStore = create<StoreState>()(
 
       addTier: (input) => {
         const s = get();
+        const level = input.level ?? Math.max(-1, ...s.tiers.map((t) => t.level)) + 1;
         const tier: VipTier = {
           id: uid("vip"),
-          level: input.level ?? Math.max(0, ...s.tiers.map((t) => t.level)) + 1,
-          name: input.name.trim(),
+          level,
+          name: (input.name ?? `VIP ${level}`).trim(),
+          title: input.title.trim(),
+          feeUsdt: input.feeUsdt,
           dailyRatePct: input.dailyRatePct,
-          minDeposit: input.minDeposit,
-          maxDeposit: input.maxDeposit,
+          hashrateTh: input.hashrateTh,
+          minKycTier: input.minKycTier,
           capacity: input.capacity,
-          filled: 0,
+          activeNodes: input.activeNodes ?? 0,
           isActive: input.isActive ?? true,
+          ...(input.fixedDailyUsdt !== undefined && { fixedDailyUsdt: input.fixedDailyUsdt }),
+          ...(input.durationDays !== undefined && { durationDays: input.durationDays }),
         };
         const error = validateTier(tier, s.tiers);
         if (error) return fail(error);
@@ -1140,8 +1203,8 @@ export const useAppStore = create<StoreState>()(
             s.notifications,
             makeNotification({
               kind: "system",
-              title: "VIP tier added",
-              body: `${tier.name} is live at ${tier.dailyRatePct}% daily.`,
+              title: "Compute node added",
+              body: `${tier.name} ${tier.title} is live at ${tier.dailyRatePct}% daily.`,
             }),
           ),
         });
@@ -1154,6 +1217,7 @@ export const useAppStore = create<StoreState>()(
         if (!current) return fail("Tier not found.");
         const next: VipTier = { ...current, ...patch, id: current.id };
         next.name = next.name.trim();
+        next.title = next.title.trim();
         const error = validateTier(next, s.tiers.filter((t) => t.id !== id));
         if (error) return fail(error);
 
@@ -1170,7 +1234,7 @@ export const useAppStore = create<StoreState>()(
                 makeNotification({
                   kind: "telemetry",
                   title: `${next.name} rate updated`,
-                  body: `Daily rate is now ${next.dailyRatePct}% (was ${current.dailyRatePct}%). Open plans keep their original rate.`,
+                  body: `Daily distribution is now ${next.dailyRatePct}% (was ${current.dailyRatePct}%). Nodes already allocated keep their original rate.`,
                 }),
               )
             : s.notifications,
@@ -1183,14 +1247,14 @@ export const useAppStore = create<StoreState>()(
         const tier = s.tiers.find((t) => t.id === id);
         if (!tier) return fail("Tier not found.");
         if (s.positions.some((p) => p.tierId === id && p.status === "active"))
-          return fail("This tier has open plans. Deactivate it instead.");
+          return fail("This tier has active nodes. Deactivate it instead.");
         set({
           tiers: s.tiers.filter((t) => t.id !== id),
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "system",
-              title: "VIP tier removed",
+              title: "Compute node removed",
               body: `${tier.name} was removed.`,
             }),
           ),
@@ -1211,123 +1275,180 @@ export const useAppStore = create<StoreState>()(
               kind: "telemetry",
               title: `${tier.name} ${isActive ? "opened" : "closed"}`,
               body: isActive
-                ? "New investments are accepted again."
-                : "New investments are paused. Existing plans keep earning.",
+                ? "New allocations are accepted again."
+                : "New allocations are paused. Existing nodes keep earning.",
             }),
           ),
         });
         return OK;
       },
 
-      /* ---------------- Staking engine ---------------- */
+      /* ---------------- Compute node engine ---------------- */
 
-      stakeInVault: (tierId, amount, source = "balance") => {
-        if (get().user.isGuest) return fail("Sign in to activate a VIP plan.");
-        const value = parseAmount(amount);
-        if (value === null) return fail("Enter a valid amount.");
-
-        get().tickYieldEngine();
+      allocateNode: (tierId, options = {}, now = Date.now()) => {
+        if (get().user.isGuest) return { ok: false, error: BLOCK_MESSAGES.guest, reason: "guest" };
+        get().tickYieldEngine(now);
         const s = get();
         const tier = s.tiers.find((t) => t.id === tierId);
-        if (!tier) return fail("VIP plan not found.");
-        if (!tier.isActive) return fail(`${tier.name} is currently closed for new investments.`);
-        if (value < tier.minDeposit || value > tier.maxDeposit)
-          return fail(
-            `${tier.name} accepts ${fmt(tier.minDeposit)}–${fmt(tier.maxDeposit)} USDT per plan.`,
-          );
-        const remaining = tier.capacity - tier.filled;
-        if (value > remaining) return fail(`${tier.name} has only ${fmt(remaining)} USDT of capacity left.`);
+        if (!tier) return { ok: false, error: "Compute node not found." };
 
-        if (source === "voucher") {
-          if (value > s.balances.trialVoucher)
-            return fail(`Insufficient trial voucher (${fmt(s.balances.trialVoucher)} USDT).`);
-        } else if (value > s.balances.available) {
-          return fail(`Insufficient available balance (${fmt(s.balances.available)} USDT).`);
+        const quote = quoteAllocation({
+          tier,
+          positions: s.positions,
+          balances: s.balances,
+          kycTier: s.user.kycTier,
+          isGuest: false,
+          useVoucher: options.useVoucher ?? false,
+        });
+        if (quote.blocked) {
+          const error =
+            quote.blocked === "kyc"
+              ? `${tier.name} needs Level ${quote.kycRequired} verification.`
+              : BLOCK_MESSAGES[quote.blocked];
+          return { ok: false, error, reason: quote.blocked };
         }
+        if (quote.shortfall > 0)
+          return {
+            ok: false,
+            error: `Insufficient balance. Deposit ${fmt(quote.shortfall)} USDT more to allocate ${tier.name}.`,
+            reason: "funds",
+            shortfall: quote.shortfall,
+          };
 
-        const stamp = new Date().toISOString();
-        const position: VaultPosition = {
-          id: uid("pos"),
+        const stamp = new Date(now).toISOString();
+        const current = currentNode(s.positions);
+        // A trial node has nothing to prorate; it ends and the new node starts fresh.
+        const upgradeInPlace = current !== null && current.tierLevel !== 0;
+        const fromTier = current ? s.tiers.find((t) => t.id === current.tierId) : undefined;
+        const voucherPortion = round6((upgradeInPlace && current ? voucherPortionOf(current) : 0) + quote.voucherApplied);
+
+        const fresh: VaultPosition = {
+          id: upgradeInPlace && current ? current.id : uid("pos"),
           tierId: tier.id,
           tierName: tier.name,
           tierLevel: tier.level,
-          principal: value,
+          principal: tier.feeUsdt,
           dailyRatePct: tier.dailyRatePct,
-          fundedBy: source,
-          openedAt: stamp,
+          dailyOutput: tierDailyOutput(tier),
+          fundedBy: voucherPortion > 0 && voucherPortion >= tier.feeUsdt ? "voucher" : "balance",
+          voucherPortion,
+          openedAt: upgradeInPlace && current ? current.openedAt : stamp,
           lastAccruedAt: stamp,
-          accrued: 0,
+          accrued: upgradeInPlace && current ? current.accrued : 0,
+          pending: upgradeInPlace && current ? pendingOf(current) : 0,
           status: "active",
+          ...(upgradeInPlace && current ? { upgradedFrom: current.tierLevel } : {}),
+          ...(tier.durationDays !== undefined ? { expiresAt: new Date(now + tier.durationDays * MS_PER_DAY).toISOString() } : {}),
         };
+
+        const positions = upgradeInPlace
+          ? s.positions.map((p) => (p.id === fresh.id ? fresh : p))
+          : [
+              fresh,
+              ...s.positions.map((p) =>
+                current && p.id === current.id ? { ...p, status: "closed" as const, closedAt: stamp } : p,
+              ),
+            ];
+        const kind = quote.kind;
+        const tx = makeTx("stake", quote.cashDue, {
+          positionId: fresh.id,
+          note:
+            (kind === "upgrade" && fromTier ? `Upgrade ${fromTier.name} → ${tier.name}` : `${tier.name} ${tier.title}`) +
+            (quote.voucherApplied > 0 ? ` (+${fmt(quote.voucherApplied)} voucher)` : ""),
+        });
 
         set({
           balances: {
             ...s.balances,
-            available: source === "balance" ? s.balances.available - value : s.balances.available,
-            trialVoucher: source === "voucher" ? s.balances.trialVoucher - value : s.balances.trialVoucher,
-            staked: s.balances.staked + value,
+            available: round6(s.balances.available - quote.cashDue),
+            trialVoucher: round6(s.balances.trialVoucher - quote.voucherApplied),
+            staked: round6(s.balances.staked + quote.price),
           },
-          positions: [position, ...s.positions],
-          tiers: s.tiers.map((t) => (t.id === tier.id ? { ...t, filled: t.filled + value } : t)),
-          transactions: prependTx(
-            s.transactions,
-            makeTx("stake", value, {
-              positionId: position.id,
-              note: `${tier.name}${source === "voucher" ? " (trial voucher)" : ""}`,
-            }),
-          ),
+          positions,
+          tiers: s.tiers.map((t) => {
+            if (t.id === tier.id) return { ...t, activeNodes: t.activeNodes + 1 };
+            if (current && t.id === current.tierId) return { ...t, activeNodes: Math.max(0, t.activeNodes - 1) };
+            return t;
+          }),
+          transactions: prependTx(s.transactions, tx),
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "stake",
-              title: "Plan activated",
-              body: `${fmt(value)} USDT invested in ${tier.name} at ${tier.dailyRatePct}% daily income.`,
+              title: kind === "upgrade" ? "Node upgraded" : "Node allocated",
+              body:
+                kind === "upgrade" && fromTier
+                  ? `Upgraded ${fromTier.name} to ${tier.name} for ${fmt(quote.price)} USDT (${fmt(quote.credit)} USDT credited from your current node).`
+                  : tier.feeUsdt === 0
+                    ? `${tier.name} ${tier.title} is running: ${fmt(tierDailyOutput(tier))} USDT per day for ${tier.durationDays} days.`
+                    : `${tier.name} ${tier.title} is running: ${fmt(tierDailyOutput(tier))} USDT per day.`,
             }),
           ),
         });
-        return okWith(position.id);
+        return { ok: true, id: fresh.id, kind, level: tier.level, charged: quote.cashDue };
+      },
+
+      collectOutput: (now = Date.now()) => {
+        if (get().user.isGuest) return { ok: false, error: "Sign in to collect compute output." };
+        get().tickYieldEngine(now);
+        const s = get();
+        const pending = totalPending(s.positions);
+        if (pending <= 0) return { ok: false, error: "No compute output to collect yet." };
+        if (pending < MIN_COLLECT_USDT)
+          return { ok: false, error: `Output is still building. Collection opens at ${fmt(MIN_COLLECT_USDT)} USDT.` };
+
+        const collected = collectPending(s, now);
+        set({
+          ...collected.patch,
+          distribution: nextDistribution(collected.amount, "manual"),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Compute output collected",
+              body: `${fmt(collected.amount)} USDT was added to your available balance.`,
+            }),
+          ),
+        });
+        return { ok: true, amount: collected.amount };
       },
 
       unstakePosition: (positionId) => {
         const s = get();
         const now = Date.now();
-        const base = { ...s, ...(settle(s, now) ?? {}) };
+        const settled = settle(s, now);
+        const base: StoreData = { ...s, ...(settled?.patch ?? {}) };
         const position = base.positions.find((p) => p.id === positionId);
-        if (!position || position.status !== "active") return fail("Active plan not found.");
+        if (!position || position.status !== "active") return fail("Active node not found.");
 
-        const returned = position.fundedBy === "balance" ? position.principal : 0;
+        const collected = collectPending(base, now, positionId);
+        const returned = round6(Math.max(0, position.principal - voucherPortionOf(position)));
         set({
           dailyAccrualDay: base.dailyAccrualDay,
           balances: {
-            ...base.balances,
-            available: base.balances.available + returned,
-            staked: Math.max(0, base.balances.staked - position.principal),
+            ...collected.patch.balances,
+            available: collected.patch.balances.available + returned,
+            staked: Math.max(0, collected.patch.balances.staked - position.principal),
           },
-          positions: base.positions.map((p) =>
+          positions: collected.patch.positions.map((p) =>
             p.id === positionId ? { ...p, status: "closed", closedAt: new Date(now).toISOString() } : p,
           ),
           tiers: base.tiers.map((t) =>
-            t.id === position.tierId ? { ...t, filled: Math.max(0, t.filled - position.principal) } : t,
+            t.id === position.tierId ? { ...t, activeNodes: Math.max(0, t.activeNodes - 1) } : t,
           ),
           transactions: prependTx(
-            base.transactions,
+            collected.patch.transactions,
             makeTx("unstake", returned, {
               positionId,
-              note:
-                position.fundedBy === "voucher"
-                  ? "Trial voucher principal is non-withdrawable; income kept"
-                  : position.tierName,
+              note: voucherPortionOf(position) > 0 ? "Trial voucher part is non-withdrawable" : position.tierName,
             }),
           ),
           notifications: prependNotifications(
             base.notifications,
             makeNotification({
               kind: "stake",
-              title: "Plan closed",
-              body:
-                position.fundedBy === "voucher"
-                  ? `${position.tierName} closed. ${fmt(position.accrued)} USDT in income was kept; the voucher principal expired.`
-                  : `${fmt(position.principal)} USDT returned from ${position.tierName}.`,
+              title: "Node released",
+              body: `${position.tierName} was released. ${fmt(returned)} USDT returned.`,
             }),
           ),
         });
@@ -1336,24 +1457,55 @@ export const useAppStore = create<StoreState>()(
 
       tickYieldEngine: (now = Date.now()) => {
         const s = get();
-        const yieldPatch = settle(s, now);
-        const pending = settlePending(yieldPatch?.transactions ?? s.transactions, now);
-        if (!yieldPatch && !pending) return;
-        set({
-          ...yieldPatch,
-          ...(pending && {
-            transactions: pending.transactions,
-            notifications: prependNotifications(
-              s.notifications,
-              ...pending.completed.map((t) =>
-                makeNotification({
-                  kind: "wallet",
-                  title: "Withdrawal completed",
-                  body: `${fmt(round6(t.amount - (t.fee ?? 0)))} USDT was sent to ${shortAddress(t.address ?? "")}.`,
-                }),
-              ),
+        const settled = settle(s, now);
+        const pending = settlePending(settled?.patch.transactions ?? s.transactions, now);
+        if (!settled && !pending) return;
+
+        let notifications = s.notifications;
+        const extra: Partial<StoreData> = {};
+        if (settled && settled.credited > 0) {
+          notifications = prependNotifications(
+            notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Compute output distributed",
+              body: `${fmt(settled.credited)} USDT from the last cycle was added to your available balance.`,
+            }),
+          );
+          extra.distribution = nextDistribution(settled.credited, "auto");
+        }
+        if (settled && settled.expired.length > 0) {
+          notifications = prependNotifications(
+            notifications,
+            ...settled.expired.map((p) =>
+              makeNotification({
+                kind: "stake",
+                title: "Trial node finished",
+                body: `${p.tierName} ran its full ${fmt(p.accrued)} USDT of output. Allocate VIP 1 or higher to keep earning.`,
+              }),
             ),
-          }),
+          );
+          const gone = new Map<string, number>();
+          for (const p of settled.expired) gone.set(p.tierId, (gone.get(p.tierId) ?? 0) + 1);
+          extra.tiers = s.tiers.map((t) => (gone.has(t.id) ? { ...t, activeNodes: Math.max(0, t.activeNodes - (gone.get(t.id) ?? 0)) } : t));
+        }
+        if (pending) {
+          notifications = prependNotifications(
+            notifications,
+            ...pending.completed.map((t) =>
+              makeNotification({
+                kind: "wallet",
+                title: "Withdrawal completed",
+                body: `${fmt(round6(t.amount - (t.fee ?? 0)))} USDT was sent to ${shortAddress(t.address ?? "")}.`,
+              }),
+            ),
+          );
+        }
+        set({
+          ...(settled?.patch ?? {}),
+          ...(pending ? { transactions: pending.transactions } : {}),
+          ...extra,
+          notifications,
         });
       },
 
@@ -1664,6 +1816,16 @@ export const useAppStore = create<StoreState>()(
             if (account.user) account.user = withTier(account.user);
           }
         }
+        // v7 -> v8: compute-node catalog. Tiers are rebuilt from the new seed, and nodes gain a pending pool.
+        if (version < 8) {
+          delete state.tiers;
+          const withPending = (list: unknown[]) => list.map((p) => ({ pending: 0, ...(p as object) }));
+          if (Array.isArray(state.positions)) state.positions = withPending(state.positions);
+          const accounts = state.accounts as Record<string, Record<string, unknown>> | undefined;
+          for (const account of Object.values(accounts ?? {})) {
+            if (Array.isArray(account.positions)) account.positions = withPending(account.positions);
+          }
+        }
         return state as unknown as StoreState;
       },
     },
@@ -1676,6 +1838,12 @@ export const useAppStore = create<StoreState>()(
 
 export const selectTotalBalance = (s: StoreState): Usd =>
   s.balances.available + s.balances.staked + s.balances.trialVoucher;
+
+/** Output earned in the current cycle and not yet in the wallet. */
+export const selectPendingOutput = (s: StoreState): Usd => totalPending(s.positions);
+
+/** Collected today plus still pending: what "today's profit" means on screen. */
+export const selectTodayProfit = (s: StoreState): Usd => s.balances.dailyAccrued + totalPending(s.positions);
 
 export const selectUnreadCount = (s: StoreState): number =>
   s.notifications.reduce((n, item) => n + (item.read ? 0 : 1), 0);

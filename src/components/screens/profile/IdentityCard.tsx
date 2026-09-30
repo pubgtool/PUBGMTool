@@ -8,6 +8,7 @@ import { toast } from "@/components/ui/Toast";
 import { ADMIN } from "@/config/protocol";
 import { useChatStore } from "@/lib/chat";
 import { initialsOf } from "@/lib/identity";
+import { currentNode } from "@/lib/nodes";
 import { kycBadge, type KycBadgeTone } from "@/lib/kyc";
 import { useAppStore } from "@/lib/store";
 
@@ -31,10 +32,9 @@ export function IdentityCard() {
   const openAuthModal = useAppStore((s) => s.openAuthModal);
   const openKycModal = useAppStore((s) => s.openKycModal);
 
-  const vipLevel = useMemo(
-    () => positions.reduce((max, p) => (p.status === "active" ? Math.max(max, p.tierLevel) : max), 0),
-    [positions],
-  );
+  const tiers = useAppStore((s) => s.tiers);
+  const node = useMemo(() => currentNode(positions), [positions]);
+  const nodeTitle = node ? (tiers.find((t) => t.id === node.tierId)?.title ?? "Compute Node") : null;
 
   const onLogout = () => {
     useChatStore.getState().reset();
@@ -125,13 +125,13 @@ export function IdentityCard() {
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {vipLevel > 0 ? (
+        {node ? (
           <span
             data-testid="profile-vip"
             className="inline-flex items-center gap-1.5 rounded-full bg-slate-950 px-3 py-1.5 text-xs font-semibold text-white"
           >
             <Zap className="h-3.5 w-3.5" aria-hidden />
-            VIP {vipLevel} Institutional Node
+            VIP {node.tierLevel} · {nodeTitle}
           </span>
         ) : (
           <button
@@ -141,7 +141,7 @@ export function IdentityCard() {
             className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
           >
             <Zap className="h-3.5 w-3.5" aria-hidden />
-            No VIP plan yet · Explore
+            No compute node yet · Explore
           </button>
         )}
 

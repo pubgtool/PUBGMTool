@@ -177,18 +177,31 @@ export interface WalletBalances {
   dailyAccrued: Usd;
 }
 
+/** A purchasable compute node level. Admin-editable, so it lives in the store. */
 export interface VipTier {
   id: string;
+  /** 0 (trial) to 8. */
   level: number;
+  /** Badge label, e.g. "VIP 2". */
   name: string;
-  /** Daily reward rate in percent, e.g. 1.2 = 1.2% per day. */
+  /** Marketing name, e.g. "Growth Cluster Node". */
+  title: string;
+  /** One-off allocation fee. */
+  feeUsdt: Usd;
+  /** Daily distribution as a percentage of the fee. */
   dailyRatePct: number;
-  minDeposit: Usd;
-  maxDeposit: Usd;
-  /** Total stake capacity of the vault. */
-  capacity: Usd;
-  /** Capacity currently consumed by open positions. */
-  filled: Usd;
+  /** Flat USDT per day instead of a percentage (the trial node). */
+  fixedDailyUsdt?: Usd;
+  /** The node stops earning after this many days (the trial node). */
+  durationDays?: number;
+  /** Illustrative capacity figure in TH/s. */
+  hashrateTh: number;
+  /** Verification level needed to allocate this node. */
+  minKycTier: KycTier;
+  /** Node slots in the network. */
+  capacity: number;
+  /** Nodes currently allocated across the network (sample data plus this device). */
+  activeNodes: number;
   isActive: boolean;
 }
 
@@ -205,7 +218,18 @@ export interface VaultPosition {
   fundedBy: FundingSource;
   openedAt: IsoTimestamp;
   lastAccruedAt: IsoTimestamp;
+  /** Lifetime output, distributed or not. */
   accrued: Usd;
+  /** Output earned in the current UTC cycle and not yet distributed. */
+  pending?: Usd;
+  /** Flat USDT per day snapshot; absent on legacy percentage plans. */
+  dailyOutput?: Usd;
+  /** When the node stops earning (trial node). */
+  expiresAt?: IsoTimestamp;
+  /** Part of the fee paid from the trial voucher; it cannot be withdrawn. */
+  voucherPortion?: Usd;
+  /** Level this node was upgraded from, if any. */
+  upgradedFrom?: number;
   status: "active" | "closed";
   closedAt?: IsoTimestamp;
 }

@@ -15,7 +15,7 @@ export const GREETING =
 
 export const FAQ_PILLS = ["Deposit Delay?", "How VIP Tiers Work", "Withdrawal Limits"] as const;
 
-const MAX_TIERS_LISTED = 6;
+const MAX_TIERS_LISTED = 9;
 
 function depositReply(): string {
   return [
@@ -35,16 +35,17 @@ function withdrawalReply(): string {
 function tiersReply(tiers: readonly VipTier[]): string {
   const open = tiers.filter((t) => t.isActive).sort((a, b) => a.level - b.level);
   const intro =
-    "Each VIP plan pays a fixed daily income on the amount you invest, credited to your available balance in real time.";
-  if (open.length === 0) return `${intro}\n\nNo plans are open for new investments right now. Please check back soon.`;
+    "You allocate a compute node once. It then produces a daily output that builds up through the day and is distributed at 00:00 UTC, or when you tap Collect Compute Output. Upgrading only charges the difference between levels. Figures here are simulated.";
+  if (open.length === 0) return `${intro}\n\nNo nodes are open for allocation right now. Please check back soon.`;
   const lines = open
     .slice(0, MAX_TIERS_LISTED)
-    .map(
-      (t) =>
-        `• ${t.name}: ${formatRate(t.dailyRatePct)} per day · ${formatAmount(t.minDeposit, 0)}–${formatAmount(t.maxDeposit, 0)} USDT`,
+    .map((t) =>
+      t.fixedDailyUsdt !== undefined
+        ? `• ${t.name} ${t.title}: free trial, ${formatAmount(t.fixedDailyUsdt)} USDT per day for ${t.durationDays ?? 3} days`
+        : `• ${t.name} ${t.title}: ${formatAmount(t.feeUsdt, 0)} USDT · ${formatRate(t.dailyRatePct)} per day`,
     );
   if (open.length > MAX_TIERS_LISTED) lines.push(`…and ${open.length - MAX_TIERS_LISTED} more on the VIP tab.`);
-  return `${intro}\n\nOpen plans right now:\n${lines.join("\n")}`;
+  return `${intro}\n\nOpen nodes right now:\n${lines.join("\n")}`;
 }
 
 const REPLIES = {

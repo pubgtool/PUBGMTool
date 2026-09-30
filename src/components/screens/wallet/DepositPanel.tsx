@@ -37,14 +37,20 @@ function useSecondsLeft(expiresAt: number): number {
   return seconds;
 }
 
-export function DepositPanel() {
+interface DepositPanelProps {
+  /** Pre-fills the simulated amount, e.g. the exact shortfall for a purchase. */
+  initialAmount?: number;
+  onDeposited?: (amount: number) => void;
+}
+
+export function DepositPanel({ initialAmount, onDeposited }: DepositPanelProps = {}) {
   const userId = useAppStore((s) => s.user.id);
   const deposit = useAppStore((s) => s.deposit);
 
   const [network, setNetwork] = useState<PaymentNetwork>("trc20");
   const [expiresAt, setExpiresAt] = useState(() => Date.now() + DEPOSIT_WINDOW_MS);
   const [copied, setCopied] = useState(false);
-  const [amountText, setAmountText] = useState("100");
+  const [amountText, setAmountText] = useState(() => (initialAmount ? toInputText(initialAmount) : "100"));
   const [busy, setBusy] = useState(false);
 
   const mounted = useRef(true);
@@ -94,8 +100,10 @@ export function DepositPanel() {
     if (!mounted.current) return;
     const result = deposit(amount, network);
     setBusy(false);
-    if (result.ok) toast.success(`Deposit of ${formatAmount(amount)} USDT credited via ${info.label}`);
-    else toast.error(result.error);
+    if (result.ok) {
+      toast.success(`Deposit of ${formatAmount(amount)} USDT credited via ${info.label}`);
+      onDeposited?.(amount);
+    } else toast.error(result.error);
   };
 
   return (

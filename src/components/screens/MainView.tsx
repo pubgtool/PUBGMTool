@@ -24,7 +24,15 @@ import { ENGINE } from "@/config/protocol";
 import { formatAmount, formatRate, formatSignedPct } from "@/lib/format";
 import { useNow } from "@/lib/hooks";
 import { summarizeRewards } from "@/lib/rewards";
-import { TRIAL_VOUCHER_AMOUNT, selectTotalBalance, selectUnreadCount, useAppStore } from "@/lib/store";
+import { currentNode, dailyOutputOf } from "@/lib/nodes";
+import {
+  TRIAL_VOUCHER_AMOUNT,
+  selectPendingOutput,
+  selectTodayProfit,
+  selectTotalBalance,
+  selectUnreadCount,
+  useAppStore,
+} from "@/lib/store";
 import type { VaultPosition, WalletSection } from "@/types/domain";
 
 const MASK = "••••••";
@@ -51,6 +59,8 @@ export function MainView() {
   const unread = useAppStore(selectUnreadCount);
   const positions = useAppStore((s) => s.positions);
   const tiers = useAppStore((s) => s.tiers);
+  const pendingOutput = useAppStore(selectPendingOutput);
+  const todayProfit = useAppStore(selectTodayProfit);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const setWalletSection = useAppStore((s) => s.setWalletSection);
   const setFocusedTierId = useAppStore((s) => s.setFocusedTierId);
@@ -60,14 +70,15 @@ export function MainView() {
   const now = useNow(30_000);
 
   const active = useMemo(() => positions.filter((p) => p.status === "active"), [positions]);
-  const openTiers = useMemo(() => tiers.filter((t) => t.isActive), [tiers]);
-  const trending = openTiers.slice(0, 2);
-  const starterTier = openTiers[0];
-  const vipLevel = useMemo(() => active.reduce((max, p) => Math.max(max, p.tierLevel), 0), [active]);
+  const paidTiers = useMemo(() => tiers.filter((t) => t.isActive && t.feeUsdt > 0), [tiers]);
+  const trending = paidTiers.slice(0, 2);
+  const starterTier = paidTiers[0];
+  const node = useMemo(() => currentNode(positions), [positions]);
+  const nodeTitle = node ? (tiers.find((t) => t.id === node.tierId)?.title ?? null) : null;
 
   const voucher = balances.trialVoucher;
   const dayStartEquity = equity - balances.dailyAccrued;
-  const dailyPct = dayStartEquity > 0 ? (balances.dailyAccrued / dayStartEquity) * 100 : 0;
+  const dailyPct = dayStartEquity > 0 ? (todayProfit / dayStartEquity) * 100 : 0;
   const mask = (value: string) => (hidden ? MASK : value);
 
   const rewards = useMemo(() => summarizeRewards(user, positions, now), [user, positions, now]);
@@ -93,7 +104,7 @@ export function MainView() {
   const actions: Array<{ label: string; Icon: LucideIcon; primary?: boolean; onPress: () => void }> = [
     { label: "Deposit", Icon: ArrowDownLeft, primary: true, onPress: () => openWallet("deposit") },
     { label: "Withdraw", Icon: ArrowUpRight, onPress: () => openWallet("withdraw") },
-    { label: "VIP Plans", Icon: Zap, onPress: () => openVaults() },
+    { label: "Compute Nodes", Icon: Zap, onPress: () => openVaults() },
     { label: "History", Icon: History, onPress: () => openWallet("history") },
   ];
 
@@ -107,9 +118,9 @@ export function MainView() {
             <h1 className="truncate text-lg font-semibold tracking-tight">
               {user.isGuest ? "Anonymous Node" : user.displayName}
             </h1>
-            {vipLevel > 0 && (
+            {node && (
               <span className="shrink-0 rounded-md bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                VIP {vipLevel}
+                VIP {node.tierLevel}
               </span>
             )}
             {user.kycTier >= 1 && (
@@ -180,7 +191,7 @@ export function MainView() {
               onClick={() => setHidden((h) => !h)}
               aria-label={hidden ? "Show balances" : "Hide balances"}
               aria-pressed={hidden}
-              className="rounded-full p-1.5 text-slate-400 outline-none transition-colors hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-slate-900"
+              className="rounded-full p-2 text-slate-400 outline-none transition-colors hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-slate-900"
             >
               {hidden ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
             </button>
@@ -196,9 +207,39 @@ export function MainView() {
           <div className="mt-3 flex w-fit items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
             <TrendingUp className="h-3.5 w-3.5" aria-hidden />
             <span className="tabular-nums">
-              +{mask(formatAmount(balances.dailyAccrued, 4))} USDT ({formatSignedPct(dailyPct)}) Today
+              +{mask(formatAmount(todayProfit, 4))} USDT ({formatSignedPct(dailyPct)}) Today
             </span>
           </div>
+
+          {!user.isGuest && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => openVaults()}
+                data-testid="main-node"
+                className="inline-flex min-h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-slate-950 px-3 py-1.5 font-semibold text-white outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+              >
+                {node ? (
+                  <>
+                    <span className="shrink-0 rounded bg-gradient-to-b from-amber-200 to-amber-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-slate-950">
+                      VIP {node.tierLevel}
+                    </span>
+                    <span className="truncate">{nodeTitle ?? node.tierName}</span>
+                  </>
+                ) : (
+                  <span className="truncate">No compute node yet · Start free</span>
+                )}
+              </button>
+              {pendingOutput > 0 && (
+                <span
+                  data-testid="main-pending"
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 font-medium tabular-nums text-amber-800"
+                >
+                  Uncollected +{mask(formatAmount(pendingOutput, 4))} USDT
+                </span>
+              )}
+            </div>
+          )}
 
           {voucher > 0 && (
             <motion.button
@@ -216,7 +257,7 @@ export function MainView() {
                   {mask(formatAmount(voucher))} USDT Trial Allocation Active
                 </span>
                 <span className="block text-xs text-amber-700/80">
-                  Deploy it into {starterTier?.name ?? "a VIP plan"} to start earning
+                  Apply it toward {starterTier?.name ?? "a compute node"} to start earning
                 </span>
               </span>
               <ChevronRight className="h-4 w-4 shrink-0 text-amber-600" aria-hidden />
@@ -281,7 +322,7 @@ export function MainView() {
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <Layers className="h-4 w-4 text-slate-400" aria-hidden />
-            Active Investment Plans
+            Active Compute Nodes
           </h2>
           {active.length > 0 && (
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-600">
@@ -295,11 +336,11 @@ export function MainView() {
             <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-400 shadow-sm">
               <Zap className="h-5 w-5" aria-hidden />
             </span>
-            <p className="mt-3 text-sm font-medium">No active plans</p>
+            <p className="mt-3 text-sm font-medium">No active compute nodes</p>
             <p className="mt-1 text-xs text-slate-500">
               {voucher > 0
-                ? "Put your trial voucher to work and start earning daily income."
-                : "Activate a VIP plan to start earning daily income."}
+                ? "Apply your trial voucher toward a node and start producing daily output."
+                : "Allocate a compute node to start producing daily output."}
             </p>
             <motion.button
               type="button"
@@ -309,8 +350,8 @@ export function MainView() {
               className="mt-4 rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
             >
               {voucher > 0
-                ? `Activate Starter Node with ${formatAmount(voucher, Number.isInteger(voucher) ? 0 : 2)} USDT Voucher`
-                : "Explore VIP Plans"}
+                ? `Allocate a Node (use ${formatAmount(voucher, Number.isInteger(voucher) ? 0 : 2)} USDT Voucher)`
+                : "Explore Compute Nodes"}
             </motion.button>
           </div>
         ) : (
@@ -329,19 +370,19 @@ export function MainView() {
                       )}
                     </div>
                     <span className="shrink-0 text-xs font-medium tabular-nums text-slate-500">
-                      {formatRate(p.dailyRatePct)} / day
+                      {p.dailyRatePct > 0 ? `${formatRate(p.dailyRatePct)} / day` : `${formatAmount(dailyOutputOf(p))} USDT / day`}
                     </span>
                   </div>
 
                   <dl className="mt-3 grid grid-cols-2 gap-3">
                     <div>
-                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Invested</dt>
+                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Allocated</dt>
                       <dd className="mt-0.5 font-mono text-sm font-medium tabular-nums">
                         {mask(formatAmount(p.principal))}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Income</dt>
+                      <dt className="text-[11px] uppercase tracking-wider text-slate-400">Output</dt>
                       <dd className="mt-0.5 font-mono text-sm font-medium tabular-nums text-emerald-600">
                         {hidden ? MASK : `+${formatAmount(p.accrued, 6)}`}
                       </dd>
@@ -350,13 +391,13 @@ export function MainView() {
 
                   <div className="mt-3">
                     <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
-                      <span>24h income cycle</span>
+                      <span>24h output cycle</span>
                       <span className="tabular-nums">{progress.toFixed(0)}%</span>
                     </div>
                     <div
                       className="h-1.5 overflow-hidden rounded-full bg-slate-200/70"
                       role="progressbar"
-                      aria-label="24 hour income cycle"
+                      aria-label="24 hour output cycle"
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={Math.round(progress)}
@@ -389,7 +430,7 @@ export function MainView() {
       <section className={`${CARD} p-4`}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Flame className="h-4 w-4 text-slate-400" aria-hidden />
-          Trending VIP Packages
+          Popular Compute Nodes
         </h2>
 
         {trending.length === 0 ? (
@@ -409,8 +450,7 @@ export function MainView() {
                     <span className="font-mono font-medium tabular-nums text-emerald-600">
                       {formatRate(t.dailyRatePct)}
                     </span>{" "}
-                    daily · Min{" "}
-                    <span className="tabular-nums">{formatAmount(t.minDeposit, 0)}</span> USDT
+                    daily · <span className="tabular-nums">{formatAmount(t.feeUsdt, 0)}</span> USDT
                   </p>
                 </div>
                 <motion.button
