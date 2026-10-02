@@ -1,0 +1,131 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import { ChevronLeft } from "lucide-react";
+import { CheckInGrid } from "@/components/screens/tasks/CheckInGrid";
+import { EnvelopeVault } from "@/components/screens/tasks/EnvelopeVault";
+import { MissionsList } from "@/components/screens/tasks/MissionsList";
+import { RewardsHero } from "@/components/screens/tasks/RewardsHero";
+import { toast } from "@/components/ui/Toast";
+import { COMMUNITY, TASKS, type TaskDef } from "@/config/rewards";
+import { formatAmount } from "@/lib/format";
+import { useNow, useRequireAuth } from "@/lib/hooks";
+import { checkInView, computeTaskBonus, taskView, type TaskView } from "@/lib/rewards";
+import { useAppStore } from "@/lib/store";
+import { msUntilNextUtcDay } from "@/lib/time";
+
+export function TasksView() {
+  const user = useAppStore((s) => s.user);
+  const positions = useAppStore((s) => s.positions);
+  const checkIn = useAppStore((s) => s.checkIn);
+  const startTask = useAppStore((s) => s.startTask);
+  const claimTask = useAppStore((s) => s.claimTask);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const requireAuth = useRequireAuth();
+
+  const [burstKey, setBurstKey] = useState(0);
+  const [popDay, setPopDay] = useState<number | null>(null);
+
+  const { rewards } = user;
+  const guest = user.isGuest;
+
+  // Tick fast only while a mission is counting down; otherwise once a second is enough.
+  const inFlight = TASKS.some((t) => {
+    const p = rewards.tasks[t.id];
+    return p?.startedAt != null && p.claimedAt == null;
+  });
+  const now = useNow(inFlight ? 250 : 1_000);
+
+  const hasActivePlan = positions.some((p) => p.status === "active");
+  const computeReward = useMemo(() => computeTaskBonus(positions), [positions]);
+
+  const views = useMemo(() => {
+    const ctx = { now, hasActivePlan, invites: user.referral.invites, computeReward };
+    return Object.fromEntries(TASKS.map((def) => [def.id, taskView(def, rewards.tasks[def.id], ctx)])) as Record<
+      string,
+      TaskView
+    >;
+  }, [now, hasActivePlan, user.referral.invites, computeReward, rewards.tasks]);
+
+  const checkInState = checkInView(rewards.checkIn, now);
+
+  const onCheckIn = () => {
+    if (!requireAuth("Sign in to check in and build your streak")) return;
+    const result = checkIn();
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    setBurstKey((n) => n + 1);
+    setPopDay(result.day ?? null);
+    toast.success(
+      result.mystery !== undefined
+        ? `Day ${result.day} complete: +${formatAmount(result.amount)} USDT incl. ${formatAmount(result.mystery)} mystery bonus`
+        : `Day ${result.day} check-in: +${formatAmount(result.amount)} USDT`,
+    );
+  };
+
+  const onStart = (def: TaskDef) => {
+    if (!requireAuth("Sign in to start missions")) return;
+    if (def.id === "telegram") window.open(COMMUNITY.telegramChannelUrl, "_blank", "noopener,noreferrer");
+    const result = startTask(def.id);
+    if (!result.ok) toast.error(result.error);
+    else if (def.kind === "timed") toast.info("Verifying your membership…");
+  };
+
+  const onClaim = (def: TaskDef): boolean => {
+    if (!requireAuth("Sign in to claim bounties")) return false;
+    const result = claimTask(def.id);
+    if (!result.ok) {
+      toast.error(result.error);
+      return false;
+    }
+    toast.success(`Bounty claimed: +${formatAmount(result.amount)} USDT`);
+    return true;
+  };
+
+  return (
+    <div className="flex flex-1 flex-col">
+      <header className="flex items-center gap-2 px-4 pb-1 pt-5">
+        <motion.button
+          type="button"
+          whileTap={{ scale: 0.9 }}
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+          onClick={() => setActiveTab("main")}
+          aria-label="Back to Main"
+          className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-surface text-fg-secondary outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-amber-400"
+        >
+          <ChevronLeft className="h-5 w-5" aria-hidden />
+        </motion.button>
+        <div>
+          <h1 className="text-xl font-extrabold tracking-tight">Tasks &amp; Rewards</h1>
+          <p className="text-xs text-fg-secondary">Daily check-ins, gift codes and missions</p>
+        </div>
+      </header>
+
+      <main className="flex flex-col gap-4 px-4 pb-4 pt-3">
+        <RewardsHero totalBounty={rewards.totalBounty} claimed={checkInState.claimed} />
+        <CheckInGrid
+          view={checkInState}
+          guest={guest}
+          resetInMs={msUntilNextUtcDay(now)}
+          burstKey={burstKey}
+          popDay={popDay}
+          onCheckIn={onCheckIn}
+        />
+        <EnvelopeVault guest={guest} onRequireAuth={() => requireAuth("Sign in to redeem your gift code")} />
+        <MissionsList
+          views={views}
+          guest={guest}
+          invites={user.referral.invites}
+          onStart={onStart}
+          onClaim={onClaim}
+          onInvite={() => setActiveTab("profile")}
+          onGetPlan={() => setActiveTab("vaults")}
+          onAuth={() => requireAuth("Sign in to start missions and claim bounties")}
+        />
+      </main>
+    </div>
+  );
+}
