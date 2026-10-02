@@ -8,7 +8,7 @@ import { TASKS, type TaskCategory, type TaskDef } from "@/config/rewards";
 import { formatAmount } from "@/lib/format";
 import type { TaskView } from "@/lib/rewards";
 
-const TAP = { scale: 0.96 } as const;
+const TAP = { scale: 0.95 } as const;
 const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 
 const ICONS: Record<TaskDef["id"], LucideIcon> = {
@@ -36,20 +36,18 @@ interface Props extends MissionActions {
 
 export function MissionsList({ views, guest, invites, ...actions }: Props) {
   return (
-    <section aria-label="Missions" className="flex flex-col gap-4">
+    <section aria-label="Missions" className="flex flex-col gap-5">
       {CATEGORIES.map((category) => {
         const tasks = TASKS.filter((t) => t.category === category);
         if (tasks.length === 0) return null;
         return (
           <div key={category}>
-            <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{category}</h2>
-            <ul className="mt-2 flex flex-col gap-3">
+            <h2 className="px-1 text-xs font-bold uppercase tracking-wider text-fg-secondary">{category}</h2>
+            <ul className="mt-2.5 flex flex-col gap-3">
               {tasks.map((def) => {
                 const view = views[def.id];
                 if (!view) return null;
-                return (
-                  <TaskCard key={def.id} def={def} view={view} guest={guest} invites={invites} {...actions} />
-                );
+                return <TaskCard key={def.id} def={def} view={view} guest={guest} invites={invites} {...actions} />;
               })}
             </ul>
           </div>
@@ -90,31 +88,26 @@ function TaskCard({
   const seconds = Math.ceil(view.remainingMs / 1000);
 
   const base =
-    "relative w-full rounded-xl px-3 py-2.5 text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-offset-2 sm:w-auto";
+    "relative flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl px-3 py-3 text-sm font-bold outline-none focus-visible:ring-2 focus-visible:ring-offset-2";
+  const ghostGold = `${base} border border-amber-400/50 bg-amber-400/10 text-amber-700 transition-colors hover:bg-amber-400/15 focus-visible:ring-amber-400`;
 
   let cta: React.ReactNode;
   if (guest) {
     cta = (
-      <motion.button
-        type="button"
-        whileTap={TAP}
-        transition={SPRING}
-        onClick={onAuth}
-        className={`${base} bg-slate-950 text-white hover:bg-slate-900 focus-visible:ring-slate-950`}
-      >
+      <motion.button type="button" whileTap={TAP} transition={SPRING} onClick={onAuth} className={ghostGold}>
         Sign in
       </motion.button>
     );
   } else if (view.status === "claimed") {
     cta = (
-      <button type="button" disabled className={`${base} flex items-center justify-center gap-1.5 bg-emerald-50 text-emerald-700`}>
-        <Check className="h-3.5 w-3.5" aria-hidden /> Completed
+      <button type="button" disabled className={`${base} border border-emerald-500/30 bg-emerald-500/10 text-emerald-700`}>
+        <Check className="h-4 w-4" aria-hidden /> Completed
       </button>
     );
   } else if (view.status === "processing") {
     cta = (
-      <button type="button" disabled className={`${base} flex items-center justify-center gap-1.5 bg-slate-100 text-slate-500`}>
-        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+      <button type="button" disabled className={`${base} border border-gray-200 bg-gray-50 text-fg-secondary`}>
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         {def.kind === "timed" ? "Verifying" : "Processing"} · {seconds}s
       </button>
     );
@@ -127,7 +120,7 @@ function TaskCard({
         onClick={() => {
           if (onClaim(def)) setBurst((n) => n + 1);
         }}
-        className={`${base} bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 focus-visible:ring-amber-600`}
+        className={`${base} btn-primary focus-visible:ring-amber-400`}
       >
         Claim Bounty
       </motion.button>
@@ -139,7 +132,7 @@ function TaskCard({
         whileTap={TAP}
         transition={SPRING}
         onClick={onGetPlan}
-        className={`${base} border border-slate-200 bg-white text-slate-800 focus-visible:ring-slate-900`}
+        className={`${base} border border-gray-200 bg-surface text-fg transition-colors hover:bg-gray-50 focus-visible:ring-amber-400`}
       >
         Get a VIP plan
       </motion.button>
@@ -151,39 +144,50 @@ function TaskCard({
         whileTap={TAP}
         transition={SPRING}
         onClick={() => (def.kind === "invite" ? onInvite() : onStart(def))}
-        className={`${base} bg-slate-950 text-white hover:bg-slate-900 focus-visible:ring-slate-950`}
+        className={ghostGold}
       >
         {def.kind === "invite" ? "Invite" : "Start"}
       </motion.button>
     );
   }
 
+  const ready = view.status === "ready";
+  const done = view.status === "claimed";
+
   return (
     <li
       data-testid={`task-${def.id}`}
       data-status={view.status}
-      className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm"
+      className={`relative overflow-hidden rounded-2xl border p-4 shadow-card ${
+        ready
+          ? "border-amber-400/50 bg-amber-50"
+          : "border-gray-200 bg-white"
+      }`}
     >
       <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-          <Icon className="h-[18px] w-[18px]" aria-hidden />
+        <span
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border ${
+            done ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" : "border-slate-100 bg-amber-400/10 text-amber-700"
+          }`}
+        >
+          <Icon className="h-5 w-5" aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="text-sm font-semibold leading-snug">{def.title}</h3>
+            <h3 className="text-sm font-bold leading-snug">{def.title}</h3>
             <span
               data-testid={`task-reward-${def.id}`}
-              className="shrink-0 rounded-full bg-amber-50 px-2 py-1 font-mono text-[11px] font-semibold leading-none tabular-nums text-amber-700"
+              className="shrink-0 rounded-full border border-slate-100 bg-amber-400/10 px-2.5 py-1 font-mono text-[11px] font-bold leading-none tabular-nums text-amber-700"
             >
               +{formatAmount(view.reward)} USDT
             </span>
           </div>
-          <p className="mt-1 text-xs text-slate-500">{def.description}</p>
+          <p className="mt-1 text-xs text-fg-secondary">{def.description}</p>
         </div>
       </div>
 
-      <div className="mt-3">
-        <div className="mb-1.5 flex items-center justify-between text-[11px] text-slate-400">
+      <div className="mt-4">
+        <div className="mb-1.5 flex items-center justify-between text-[11px] text-fg-secondary">
           <span data-testid={`task-status-${def.id}`}>{statusLine(def, view, invites)}</span>
         </div>
         <div
@@ -192,18 +196,20 @@ function TaskCard({
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(view.progress * 100)}
-          className="h-1.5 overflow-hidden rounded-full bg-slate-100"
+          className="h-2 overflow-hidden rounded-full bg-gray-100"
         >
           <div
             className={`h-full rounded-full transition-[width] duration-300 ease-linear ${
-              view.status === "claimed" ? "bg-emerald-500" : view.status === "ready" ? "bg-amber-500" : "bg-slate-900"
+              done
+                ? "bg-emerald-500"
+                : "bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 shadow-[0_0_10px_rgba(245,158,11,0.55)]"
             }`}
             style={{ width: `${view.progress * 100}%` }}
           />
         </div>
       </div>
 
-      <div className="relative mt-3 flex sm:justify-end">
+      <div className="relative mt-4">
         {cta}
         <BurstEffect burstKey={burst} count={14} radius={60} />
       </div>

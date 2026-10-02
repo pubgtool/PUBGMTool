@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowLeft, Check, Loader2, ShieldAlert, Ticket, X } from "lucide-react";
 import { DepositPanel } from "@/components/screens/wallet/DepositPanel";
-import { TierBadge } from "@/components/vip/parts";
+import { CrownBadge } from "@/components/vip/CrownBadge";
 import { blockText, usdt } from "@/components/vip/cta";
 import { BottomSheet, SheetDescription, SheetTitle } from "@/components/ui/BottomSheet";
 import { BurstEffect } from "@/components/ui/Burst";
@@ -27,6 +27,8 @@ interface Done {
   kind: "activate" | "upgrade";
   fromLevel: number | null;
   charged: number;
+  /** Festival first-activation bonus credited with this allocation. */
+  bonus: number;
 }
 
 interface Props {
@@ -45,8 +47,8 @@ export function NodeSheet({ tierId, onClose }: Props) {
 function Row({ label, value, tone = "default", testId }: { label: string; value: React.ReactNode; tone?: "default" | "green"; testId?: string }) {
   return (
     <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm">
-      <dt className="text-slate-500">{label}</dt>
-      <dd data-testid={testId} className={`text-right font-mono font-medium tabular-nums ${tone === "green" ? "text-emerald-600" : "text-slate-900"}`}>
+      <dt className="text-fg-secondary">{label}</dt>
+      <dd data-testid={testId} className={`text-right font-mono font-medium tabular-nums ${tone === "green" ? "text-emerald-600" : "text-fg"}`}>
         {value}
       </dd>
     </div>
@@ -102,8 +104,14 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
       haptic([20, 50, 30]);
       playChime("allocate");
       setBurst((n) => n + 1);
-      setDone({ kind: result.kind, fromLevel: quote.fromLevel, charged: result.charged });
-      toast.success(result.kind === "upgrade" ? `Upgraded to ${tier.name}` : `${tier.name} node is running`);
+      setDone({ kind: result.kind, fromLevel: quote.fromLevel, charged: result.charged, bonus: result.bonus ?? 0 });
+      toast.success(
+        result.bonus
+          ? `${tier.name} node is running · +${formatAmount(result.bonus)} USDT festival bonus`
+          : result.kind === "upgrade"
+            ? `Upgraded to ${tier.name}`
+            : `${tier.name} node is running`,
+      );
     } else if (result.reason === "funds") {
       setForceDeposit(true);
     } else {
@@ -126,16 +134,16 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <TierBadge level={tier.level} />
+            <CrownBadge level={tier.level} size="pill" />
             <SheetTitle className="truncate text-lg font-semibold tracking-tight">{heading}</SheetTitle>
           </div>
-          <SheetDescription className="mt-1.5 truncate text-xs text-slate-500">{tier.title}</SheetDescription>
+          <SheetDescription className="mt-1.5 truncate text-xs text-fg-secondary">{tier.title}</SheetDescription>
         </div>
         <button
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="rounded-full bg-slate-100 p-2 text-slate-500 outline-none transition-colors hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-slate-900"
+          className="rounded-full bg-gray-100 p-2 text-fg-secondary outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-amber-400"
         >
           <X className="h-4 w-4" aria-hidden />
         </button>
@@ -153,13 +161,13 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
         >
           {view === "review" && (
             <div className="flex flex-col gap-4">
-              <dl className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-100">
+              <dl className="divide-y divide-gray-100 overflow-hidden rounded-2xl border border-gray-200">
                 <Row label="Allocation fee" value={quote.fee === 0 ? "Free" : `${formatAmount(quote.fee)} USDT`} testId="sheet-fee" />
                 {upgrading && quote.credit > 0 && (
                   <Row label={`Credit from VIP ${quote.fromLevel}`} value={`-${formatAmount(quote.credit)} USDT`} tone="green" testId="sheet-credit" />
                 )}
                 {quote.voucherApplied > 0 && <Row label="Trial voucher" value={`-${formatAmount(quote.voucherApplied)} USDT`} tone="green" testId="sheet-voucher" />}
-                <div className="flex items-center justify-between gap-3 bg-slate-50 px-3.5 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3 bg-gray-50 px-3.5 py-3 text-sm">
                   <dt className="font-semibold">{upgrading ? "You pay (difference)" : "You pay"}</dt>
                   <dd data-testid="sheet-pay" className="font-mono text-base font-semibold tabular-nums">
                     {formatAmount(quote.cashDue)} USDT
@@ -169,19 +177,19 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
               </dl>
 
               {balances.trialVoucher > 0 && quote.price > 0 && (
-                <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3">
+                <div className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-amber-500/10 px-3.5 py-3">
                   <Ticket className="h-4 w-4 shrink-0 text-amber-700" aria-hidden />
                   <span className="min-w-0 flex-1 text-xs">
-                    <span className="block font-semibold text-amber-900">Use trial voucher ({formatAmount(balances.trialVoucher)} USDT)</span>
-                    <span className="block text-amber-800/80">Counts toward the fee. Its value can&apos;t be withdrawn.</span>
+                    <span className="block font-semibold text-amber-700">Use trial voucher ({formatAmount(balances.trialVoucher)} USDT)</span>
+                    <span className="block text-amber-700">Counts toward the fee. Its value can&apos;t be withdrawn.</span>
                   </span>
                   <Switch label="Use trial voucher" checked={useVoucher} onChange={setUseVoucher} />
                 </div>
               )}
 
               <dl className="grid grid-cols-2 gap-2">
-                <div className="rounded-2xl bg-slate-50 px-3.5 py-3">
-                  <dt className="text-[10px] font-medium uppercase tracking-wider text-slate-400">Daily output</dt>
+                <div className="rounded-2xl bg-gray-50 px-3.5 py-3">
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-fg-muted">Daily output</dt>
                   <dd data-testid="sheet-output" className="mt-1 font-mono text-sm font-semibold tabular-nums">
                     {formatAmount(output)} USDT
                   </dd>
@@ -191,26 +199,26 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
                     </dd>
                   )}
                 </div>
-                <div className="rounded-2xl bg-slate-50 px-3.5 py-3">
-                  <dt className="text-[10px] font-medium uppercase tracking-wider text-slate-400">Next distribution</dt>
+                <div className="rounded-2xl bg-gray-50 px-3.5 py-3">
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-fg-muted">Next distribution</dt>
                   <dd className="mt-1 font-mono text-sm font-semibold tabular-nums">{formatCountdown(msUntilNextUtcDay(Date.now()))}</dd>
-                  <dd className="mt-0.5 text-xs text-slate-500">then every 00:00 UTC</dd>
+                  <dd className="mt-0.5 text-xs text-fg-secondary">then every 00:00 UTC</dd>
                 </div>
               </dl>
 
               {blocked && (
-                <p role="alert" data-testid="sheet-blocked" className="flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-700">
+                <p role="alert" data-testid="sheet-blocked" className="flex items-start gap-2 rounded-xl bg-rose-500/10 px-3 py-2.5 text-xs font-medium text-rose-600">
                   <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
                   {blocked}
                 </p>
               )}
               {error && (
-                <p role="alert" data-testid="sheet-error" className="rounded-xl bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-700">
+                <p role="alert" data-testid="sheet-error" className="rounded-xl bg-rose-500/10 px-3 py-2.5 text-xs font-medium text-rose-600">
                   {error}
                 </p>
               )}
               {depositNote && (
-                <p role="status" data-testid="sheet-deposit-note" className="rounded-xl bg-emerald-50 px-3 py-2.5 text-xs font-medium text-emerald-700">
+                <p role="status" data-testid="sheet-deposit-note" className="rounded-xl bg-emerald-500/10 px-3 py-2.5 text-xs font-medium text-emerald-700">
                   {depositNote}
                 </p>
               )}
@@ -225,7 +233,7 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
                     openKycModal();
                   }}
                   data-testid="sheet-verify"
-                  className="w-full rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+                  className="w-full rounded-2xl btn-primary py-3.5 text-sm font-semibold  outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
                 >
                   Verify identity (Level {quote.kycRequired})
                 </motion.button>
@@ -238,7 +246,7 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
                   disabled={busy || quote.blocked !== null}
                   aria-busy={busy}
                   data-testid="sheet-confirm"
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:bg-slate-300"
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl btn-primary py-3.5 text-sm font-semibold  outline-none transition-colors focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
                 >
                   {busy ? (
                     <>
@@ -258,11 +266,11 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
 
           {view === "deposit" && (
             <div className="flex flex-col gap-4">
-              <div data-testid="deposit-banner" className="rounded-2xl bg-slate-950 px-4 py-3.5 text-white">
+              <div data-testid="deposit-banner" className="rounded-2xl btn-primary px-4 py-3.5 ">
                 <p className="text-sm font-semibold">
                   Deposit {usdt(quote.shortfall > 0 ? quote.shortfall : prefill)} USDT to allocate {tier.name}
                 </p>
-                <p className="mt-1 text-xs text-slate-300">
+                <p className="mt-1 text-xs text-gray-400">
                   You have {formatAmount(quote.available)} USDT and need {formatAmount(quote.cashDue)} USDT.
                   {quote.shortfall > 0 && quote.shortfall < MIN_DEPOSIT && ` The minimum deposit is ${formatAmount(MIN_DEPOSIT)} USDT, so that amount is pre-filled.`}
                 </p>
@@ -278,7 +286,7 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
                 <button
                   type="button"
                   onClick={() => setForceDeposit(false)}
-                  className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 py-3 text-sm font-semibold outline-none hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-slate-900"
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-gray-200 py-3 text-sm font-semibold outline-none hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-amber-400"
                 >
                   <ArrowLeft className="h-4 w-4" aria-hidden /> Back to allocation
                 </button>
@@ -302,17 +310,22 @@ function Body({ tierId, onClose }: { tierId: string; onClose: () => void }) {
               <p data-testid="sheet-done-title" className="mt-4 text-lg font-semibold tracking-tight">
                 {done.kind === "upgrade" ? `Upgraded to ${tier.name}` : `${tier.name} node is running`}
               </p>
-              <p className="mt-1 max-w-xs text-xs text-slate-500">
+              <p className="mt-1 max-w-xs text-xs text-fg-secondary">
                 {done.kind === "upgrade" && done.fromLevel !== null
                   ? `Only the difference (${formatAmount(done.charged)} USDT) was charged. The new rate applies from now.`
                   : "Output starts building now and is distributed at 00:00 UTC."}
               </p>
               <p className="mt-3 font-mono text-sm font-semibold tabular-nums text-emerald-600">+{formatAmount(output)} USDT / day</p>
+              {done.bonus > 0 && (
+                <p data-testid="sheet-bonus" className="mt-3 rounded-full border border-amber-400/40 bg-amber-400/10 px-3.5 py-1.5 text-xs font-bold text-amber-700">
+                  Festival bonus +{formatAmount(done.bonus)} USDT credited
+                </p>
+              )}
               <button
                 type="button"
                 onClick={onClose}
                 data-testid="sheet-done"
-                className="mt-5 w-full rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+                className="mt-5 w-full rounded-2xl btn-primary py-3.5 text-sm font-semibold  outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
               >
                 Done
               </button>

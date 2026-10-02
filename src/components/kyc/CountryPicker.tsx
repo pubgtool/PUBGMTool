@@ -100,8 +100,8 @@ export function CountryPicker({ id, value, onChange, onBlur, invalid = false, de
         onBlur={() => {
           if (!open) onBlur?.();
         }}
-        className={`flex w-full items-center gap-3 rounded-2xl border bg-white px-4 py-3 text-left text-base outline-none transition-colors focus-visible:border-slate-950 ${
-          invalid ? "border-rose-300" : open ? "border-slate-950" : "border-slate-200"
+        className={`flex w-full items-center gap-3 rounded-2xl border bg-canvas px-4 py-3.5 text-left text-base text-fg outline-none transition-colors focus-visible:border-amber-400 focus-visible:ring-2 focus-visible:ring-amber-400/15 ${
+          invalid ? "border-rose-500/50" : open ? "border-amber-400" : "border-gray-200"
         }`}
       >
         {selected ? (
@@ -114,15 +114,15 @@ export function CountryPicker({ id, value, onChange, onBlur, invalid = false, de
             </span>
           </>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-slate-400">Select country or region</span>
+          <span className="min-w-0 flex-1 truncate text-fg-muted">Select country or region</span>
         )}
-        <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
+        <ChevronDown className={`h-4 w-4 shrink-0 text-fg-muted transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
       </button>
 
       {open && (
-        <div data-escape-block className="mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center gap-2 border-b border-slate-100 px-3.5">
-            <Search className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+        <div data-escape-block className="mt-2 overflow-hidden rounded-2xl border border-gray-200 bg-canvas shadow-card">
+          <div className="flex items-center gap-2 border-b border-gray-200 px-3.5">
+            <Search className="h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <input
               ref={search}
               type="text"
@@ -141,11 +141,11 @@ export function CountryPicker({ id, value, onChange, onBlur, invalid = false, de
                 setActive(0);
               }}
               onKeyDown={onSearchKeyDown}
-              className="min-w-0 flex-1 bg-transparent py-3 text-base outline-none placeholder:text-slate-400"
+              className="min-w-0 flex-1 bg-transparent py-3.5 text-base text-fg outline-none placeholder:text-fg-muted"
             />
           </div>
           <ul id={listId} role="listbox" aria-label="Countries and regions" className="max-h-56 overflow-y-auto overscroll-contain py-1">
-            {options.length === 0 && <li className="px-4 py-4 text-center text-sm text-slate-500">No matching country</li>}
+            {options.length === 0 && <li className="px-4 py-4 text-center text-sm text-fg-secondary">No matching country</li>}
             {options.map((country, i) => (
               <li
                 key={country.code}
@@ -155,14 +155,14 @@ export function CountryPicker({ id, value, onChange, onBlur, invalid = false, de
                 data-testid={`country-option-${country.code}`}
                 onPointerMove={() => setActive(i)}
                 onClick={() => choose(country.code)}
-                className={`flex cursor-pointer items-center gap-3 px-4 py-2.5 text-sm ${i === activeIndex ? "bg-slate-100" : ""}`}
+                className={`flex min-h-11 cursor-pointer items-center gap-3 px-4 py-2.5 text-sm ${i === activeIndex ? "bg-amber-400/10" : ""}`}
               >
                 <span className="text-lg leading-none" aria-hidden>
                   {country.flag}
                 </span>
                 <span className="min-w-0 flex-1 truncate">{country.name}</span>
-                <span className="font-mono text-[11px] text-slate-400">{country.code}</span>
-                {country.code === value && <Check className="h-4 w-4 shrink-0 text-slate-950" aria-label="selected" />}
+                <span className="font-mono text-[11px] text-fg-muted">{country.code}</span>
+                {country.code === value && <Check className="h-4 w-4 shrink-0 text-amber-700" aria-label="selected" />}
               </li>
             ))}
           </ul>

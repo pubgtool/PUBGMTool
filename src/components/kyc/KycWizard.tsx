@@ -13,7 +13,7 @@ import { kycSteps } from "@/lib/kyc";
 import { useAppStore } from "@/lib/store";
 import { wait } from "@/lib/async";
 
-const TAP = { scale: 0.98 } as const;
+const TAP = { scale: 0.95 } as const;
 const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 const SUBMIT_MS = 700;
 
@@ -105,16 +105,18 @@ export function KycWizard({ tier, step, onStep, api, onExit, onSubmitted }: Prop
 
   return (
     <div>
-      <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/95 px-5 pb-3 pt-3 backdrop-blur">
+      <div className="sticky top-0 z-10 border-b border-gray-200 bg-surface/95 px-5 pb-3 pt-3 backdrop-blur">
         <div className="flex items-center gap-2">
-          <button
+          <motion.button
             type="button"
+            whileTap={{ scale: 0.9 }}
+            transition={SPRING}
             onClick={() => (step === 0 ? onExit() : go(step - 1))}
             aria-label={step === 0 ? "Back to overview" : "Previous step"}
-            className="-ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-slate-600 outline-none transition-colors hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-slate-900"
+            className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-canvas/60 text-fg-secondary outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-amber-400"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden />
-          </button>
+          </motion.button>
           <div className="min-w-0 flex-1">
             <StepIndicator tier={tier} steps={steps} current={step} />
           </div>
@@ -138,18 +140,18 @@ export function KycWizard({ tier, step, onStep, api, onExit, onSubmitted }: Prop
 
         {lastInput && (
           <div className="mt-5">
-            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 px-3.5 py-3 text-xs text-slate-600 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-slate-900">
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-gray-200 px-3.5 py-3 text-xs text-fg-secondary has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-amber-400">
               <input
                 type="checkbox"
                 checked={draft.consent}
                 onChange={(event) => patch({ consent: event.target.checked })}
                 data-testid="kyc-consent"
-                className="mt-0.5 h-4 w-4 shrink-0 accent-slate-950"
+                className="mt-0.5 h-4 w-4 shrink-0 accent-amber-500"
               />
               <span>I confirm the documents are genuine, belong to me and the details I entered are accurate.</span>
             </label>
             {showErrors && !draft.consent && (
-              <p role="alert" className="mt-1.5 text-xs font-medium text-rose-600">
+              <p role="alert" className="mt-2 rounded-xl bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-600">
                 Confirm this to submit.
               </p>
             )}
@@ -157,20 +159,20 @@ export function KycWizard({ tier, step, onStep, api, onExit, onSubmitted }: Prop
         )}
 
         {error && (
-          <p role="alert" data-testid="kyc-error" className="mt-4 flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-700">
+          <p role="alert" data-testid="kyc-error" className="mt-4 flex items-start gap-2 rounded-xl bg-rose-500/10 px-3 py-2.5 text-xs font-medium text-rose-600">
             <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
             {error}
           </p>
         )}
 
-        <p className="mt-5 flex items-start gap-1.5 text-[11px] text-slate-400">
+        <p className="mt-5 flex items-start gap-1.5 text-[11px] text-fg-secondary">
           <ShieldCheck className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-          Sandbox: files stay in your browser and are never uploaded.{" "}
+          Demo mode: files stay in your browser and are never uploaded.{" "}
           {tier === 1 ? "Only your document type and country are saved." : "Only the document type is saved."}
         </p>
       </div>
 
-      <div className="sticky bottom-0 border-t border-slate-100 bg-white px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+      <div className="sticky bottom-0 border-t border-gray-200 bg-surface px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
         <motion.button
           type="button"
           whileTap={busy || primaryDisabled ? undefined : TAP}
@@ -179,7 +181,7 @@ export function KycWizard({ tier, step, onStep, api, onExit, onSubmitted }: Prop
           disabled={busy || primaryDisabled}
           aria-busy={busy}
           data-testid="kyc-primary"
-          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:bg-slate-300"
+          className="btn-primary flex w-full items-center justify-center gap-2 rounded-2xl py-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
         >
           {busy ? (
             <>
@@ -190,7 +192,7 @@ export function KycWizard({ tier, step, onStep, api, onExit, onSubmitted }: Prop
           )}
         </motion.button>
         {id === "liveness" && !draft.livenessDone && (
-          <p className="mt-2 text-center text-[11px] text-slate-400">Complete the face scan to continue.</p>
+          <p className="mt-2 text-center text-[11px] text-fg-secondary">Complete the face scan to continue.</p>
         )}
       </div>
     </div>

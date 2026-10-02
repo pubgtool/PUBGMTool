@@ -2,7 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
+/* One background everywhere; there is no dark mode. */
+html,
+body,
+#root {
+  background-color: #f5f6fa !important;
+}
+
 @layer base {
-  html { @apply bg-canvas text-ink antialiased; scrollbar-gutter: stable; }
-  .tabular { font-variant-numeric: tabular-nums; }
+  html {
+    @apply text-fg antialiased;
+    color-scheme: light;
+    scrollbar-gutter: stable;
+  }
+  /* Ring offsets would otherwise be white on the grey canvas. */
+  *,
+  ::before,
+  ::after {
+    --tw-ring-offset-color: #f5f6fa;
+  }
+  ::selection {
+    background: rgba(17, 24, 39, 0.88);
+    color: #fff;
+  }
+  input,
+  textarea,
+  select {
+    color-scheme: light;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .surface {
+    @apply border border-slate-100 bg-surface shadow-card;
+  }
+  .glass {
+    @apply border border-gray-100 bg-white/90 shadow-card backdrop-blur-xl;
+  }
+  .btn-primary {
+    @apply bg-gray-900 font-bold text-white shadow-btn;
+  }
+  .btn-primary:disabled,
+  .btn-primary[aria-disabled="true"] {
+    @apply bg-gray-200 text-gray-400 shadow-none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 
 const COLORS = ["#f59e0b", "#fbbf24", "#ef4444", "#10b981", "#0ea5e9", "#a855f7", "#f8fafc"] as const;
+const PROFIT_COLORS = ["#10b981", "#34d399", "#6ee7b7", "#a7f3d0", "#fbbf24"] as const;
 const BURST_MS = 1_200;
 const RAIN_MS = 4_600;
 
@@ -24,10 +25,12 @@ interface BurstProps {
   burstKey: number;
   count?: number;
   radius?: number;
+  /** "profit" bursts in emerald for claimed output. */
+  palette?: "celebrate" | "profit";
 }
 
 /** Radial particle pop centred in its (relative) parent. */
-export function BurstEffect({ burstKey, count = 16, radius = 72 }: BurstProps) {
+export function BurstEffect({ burstKey, count = 16, radius = 72, palette = "celebrate" }: BurstProps) {
   const reduceMotion = useReducedMotion();
   const [activeKey, setActiveKey] = useState(0);
 
@@ -48,10 +51,10 @@ export function BurstEffect({ burstKey, count = 16, radius = 72 }: BurstProps) {
         x: Math.cos(angle) * distance,
         y: Math.sin(angle) * distance - 8,
         size: 4 + Math.round(rand() * 4),
-        color: pick(COLORS, rand()),
+        color: pick(palette === "profit" ? PROFIT_COLORS : COLORS, rand()),
       };
     });
-  }, [burstKey, count, radius]);
+  }, [burstKey, count, radius, palette]);
 
   if (reduceMotion || activeKey === 0) return null;
 

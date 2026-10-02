@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { AlertCircle, Check, Clock, ShieldCheck } from "lucide-react";
 import { KycGate } from "@/components/kyc/KycGate";
+import { NetworkTile } from "@/components/screens/wallet/NetworkBadge";
 import { NetworkPicker } from "@/components/screens/wallet/NetworkPicker";
+import { CARD, CTA, EYEBROW, FOCUS, HIT, SPRING, TAP, TAP_CTA } from "@/components/screens/wallet/styles";
 import { WithdrawConfirmSheet, type WithdrawDraft } from "@/components/screens/wallet/WithdrawConfirmSheet";
 import { AmountField } from "@/components/ui/AmountField";
 import { floor6, parseAmountInput, toInputText } from "@/lib/amount";
@@ -20,14 +22,18 @@ import {
   defaultNetworkFor,
   getNetwork,
   guessFamily,
+  type AddressFamily,
 } from "@/lib/wallet";
 import type { PaymentNetwork } from "@/types/domain";
 
-const CARD = "rounded-3xl border border-slate-100 bg-white shadow-sm";
 const CHIPS = [25, 50, 75, 100] as const;
-const TAP = { scale: 0.96 } as const;
-const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 const NAV_DELAY_MS = 260;
+const PLACEHOLDER: Record<AddressFamily, string> = {
+  tron: "T… (34 characters)",
+  evm: "0x… (42 characters)",
+  ton: "UQ… (48 characters)",
+};
+const FAMILY_NAME: Record<AddressFamily, string> = { tron: "Tron", evm: "EVM", ton: "TON" };
 
 /** Withdrawals need at least Level 1; below that the security gate takes the form's place. */
 export function WithdrawPanel() {
@@ -81,8 +87,7 @@ function WithdrawForm() {
     const next = value.replace(/\s+/g, "");
     setAddress(next);
     const guess = guessFamily(next);
-    if (guess === "tron" && network !== "trc20") setNetwork("trc20");
-    else if (guess === "evm" && network === "trc20") setNetwork("bep20");
+    if (guess && guess !== info.family) setNetwork(defaultNetworkFor(next) ?? network);
   };
 
   const chipValue = (pct: number) => {
@@ -102,46 +107,64 @@ function WithdrawForm() {
     ["Network gas fee", `-${formatAmount(WITHDRAWAL_FEE)} USDT`],
   ];
 
+  const meterFill =
+    limit === null
+      ? ""
+      : used >= limit
+        ? "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.6)]"
+        : used / limit > 0.8
+          ? "bg-gradient-to-r from-orange-400 to-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.6)]"
+          : "bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-400 shadow-[0_0_12px_rgba(251,191,36,0.55)]";
+
   return (
     <div className="flex flex-col gap-4">
       <section className={`${CARD} p-5`} aria-label="Payout destination">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">Payout destination</h2>
-          <button
+          <h2 className="text-base font-bold tracking-tight">Payout destination</h2>
+          <motion.button
             type="button"
+            whileTap={TAP}
+            transition={SPRING}
             onClick={openKycModal}
             data-testid="wallet-kyc-badge"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
+            className={`${HIT} inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-400/25 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-semibold text-emerald-700 ${FOCUS}`}
           >
             <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
             Verified Level {tier}
-          </button>
+          </motion.button>
         </div>
-        <div className="mt-3">
+        <div className="mt-4">
           <NetworkPicker name="withdraw-network" value={network} onChange={setNetwork} />
         </div>
 
-        <label htmlFor="payout-address" className="mt-4 block text-xs font-medium uppercase tracking-wider text-slate-500">
+        <label htmlFor="payout-address" className={`${EYEBROW} mt-5 block`}>
           Payout address
         </label>
-        <input
-          id="payout-address"
-          type="text"
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          placeholder={info.family === "tron" ? "T… (34 characters)" : "0x… (42 characters)"}
-          value={address}
-          onChange={(event) => onAddressChange(event.target.value)}
-          onBlur={() => setAddressTouched(true)}
-          aria-invalid={addressTouched && addressProblem !== null}
-          aria-describedby="payout-address-note"
-          className={`mt-2 w-full rounded-2xl border bg-white px-4 py-3 font-mono text-[13px] outline-none transition-colors placeholder:text-slate-300 focus:border-slate-950 ${
-            addressTouched && addressProblem ? "border-rose-300" : "border-slate-200"
-          }`}
-        />
-        <p id="payout-address-note" className="mt-2 min-h-4 text-xs" aria-live="polite">
+        <div className="relative mt-2">
+          <span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2">
+            <NetworkTile id={network} size="xs" />
+          </span>
+          <input
+            id="payout-address"
+            type="text"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder={PLACEHOLDER[info.family]}
+            value={address}
+            onChange={(event) => onAddressChange(event.target.value)}
+            onBlur={() => setAddressTouched(true)}
+            aria-invalid={addressTouched && addressProblem !== null}
+            aria-describedby="payout-address-note"
+            className={`w-full rounded-2xl border bg-canvas/60 py-3.5 pl-11 pr-3 font-mono text-xs text-fg shadow-inner shadow-black/30 outline-none transition-colors placeholder:text-fg-muted ${
+              addressTouched && addressProblem
+                ? "border-rose-500/60 focus:border-rose-400 focus:shadow-[0_0_0_3px_rgba(244,63,94,0.16)]"
+                : "border-gray-200 focus:border-amber-400 focus:shadow-[0_0_0_3px_rgba(251,191,36,0.14)]"
+            }`}
+          />
+        </div>
+        <p id="payout-address-note" className="mt-2.5 min-h-4 text-xs leading-relaxed" aria-live="polite">
           {addressValid ? (
             <span className="flex items-center gap-1.5 text-emerald-600">
               <Check className="h-3.5 w-3.5" aria-hidden /> Valid {info.chain} address for {info.label}
@@ -149,34 +172,37 @@ function WithdrawForm() {
           ) : addressTouched && addressProblem ? (
             <span className="text-rose-600">{addressProblem}</span>
           ) : family ? (
-            <span className="text-slate-500">
-              Detected a {family === "tron" ? "Tron" : "EVM"} address. Network set to {info.label}.
+            <span className="text-fg-secondary">
+              Detected a {FAMILY_NAME[family]} address. Network set to {info.label}.
             </span>
           ) : (
-            <span className="text-slate-500">Paste the address; the network is detected automatically.</span>
+            <span className="text-fg-secondary">Paste the address; the network is detected automatically.</span>
           )}
         </p>
         {savedAddress && address !== savedAddress && (
-          <button
+          <motion.button
             type="button"
+            whileTap={TAP}
+            transition={SPRING}
             onClick={() => {
               onAddressChange(savedAddress);
               setAddressTouched(true);
             }}
-            className="mt-1 text-xs font-semibold text-slate-700 underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
+            className={`${HIT} mt-2 inline-block rounded text-xs font-semibold text-amber-700 underline underline-offset-2 ${FOCUS}`}
           >
             Use saved payout address
-          </button>
+          </motion.button>
         )}
       </section>
 
       <section className={`${CARD} p-5`} aria-label="Withdrawal amount">
-        <div className="flex items-baseline justify-between">
-          <label htmlFor="withdraw-amount" className="text-xs font-medium uppercase tracking-wider text-slate-500">
+        <div className="flex items-baseline justify-between gap-3">
+          <label htmlFor="withdraw-amount" className={EYEBROW}>
             Amount
           </label>
-          <span className="text-xs text-slate-500">
-            Available <span className="font-mono font-medium tabular-nums text-slate-800">{formatAmountFlexible(available)}</span> USDT
+          <span className="text-xs text-fg-secondary">
+            Available{" "}
+            <span className="font-mono font-semibold tabular-nums text-fg">{formatAmountFlexible(available)}</span> USDT
           </span>
         </div>
         <div className="mt-2">
@@ -199,10 +225,10 @@ function WithdrawForm() {
                 transition={SPRING}
                 onClick={() => setAmountText(toInputText(value))}
                 disabled={available <= 0}
-                className={`rounded-xl border py-2 text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-slate-900 disabled:opacity-40 ${
+                className={`min-h-11 rounded-xl border py-2 text-xs font-bold transition-colors disabled:opacity-40 ${FOCUS} ${
                   amount !== null && value > 0 && amount === value
-                    ? "border-slate-950 bg-slate-950 text-white"
-                    : "border-slate-200 bg-white text-slate-700"
+                    ? "border-amber-300/60 btn-primary"
+                    : "border-gray-200 bg-canvas/50 text-fg hover:border-gray-300"
                 }`}
               >
                 {pct === 100 ? "MAX" : `${pct}%`}
@@ -214,43 +240,47 @@ function WithdrawForm() {
           <p
             id="withdraw-amount-error"
             role="alert"
-            className="mt-3 flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-xs text-rose-700"
+            className="mt-3 flex items-start gap-2 rounded-2xl border border-rose-500/25 bg-rose-500/10 px-3.5 py-3 text-xs leading-relaxed text-rose-800"
           >
-            <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-600" aria-hidden />
             <span className="flex-1">{amountProblem}</span>
             {fundsIssue && (
-              <button
+              <motion.button
                 type="button"
+                whileTap={TAP}
+                transition={SPRING}
                 onClick={() => setWalletSection("deposit")}
-                className="shrink-0 font-semibold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                className={`${HIT} shrink-0 rounded font-bold text-rose-800 underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-rose-400`}
               >
                 Deposit
-              </button>
+              </motion.button>
             )}
             {limitIssue && (
-              <button
+              <motion.button
                 type="button"
+                whileTap={TAP}
+                transition={SPRING}
                 onClick={openKycModal}
                 data-testid="raise-limit"
-                className="shrink-0 font-semibold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                className={`${HIT} shrink-0 rounded font-bold text-rose-800 underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-rose-400`}
               >
                 Raise limit
-              </button>
+              </motion.button>
             )}
           </p>
         )}
 
-        <div data-testid="limit-meter" className="mt-4 rounded-2xl bg-slate-50 px-3.5 py-3">
+        <div data-testid="limit-meter" className="mt-4 rounded-2xl border border-gray-200 bg-canvas/50 px-3.5 py-3">
           {limit === null ? (
-            <p className="flex items-center gap-2 text-xs font-medium text-slate-700">
+            <p className="flex items-center gap-2 text-xs font-medium text-fg">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" aria-hidden />
               Unlimited daily withdrawals · {tierDef(tier).name}
             </p>
           ) : (
             <>
               <div className="flex items-baseline justify-between gap-2 text-xs">
-                <span className="font-medium text-slate-700">Daily limit</span>
-                <span className="font-mono tabular-nums text-slate-500">
+                <span className="font-semibold text-fg">Daily limit</span>
+                <span className="font-mono tabular-nums text-fg-secondary">
                   <span data-testid="limit-used">{formatAmount(used)}</span> / {formatAmount(limit)} USDT
                 </span>
               </div>
@@ -260,47 +290,62 @@ function WithdrawForm() {
                 aria-valuemin={0}
                 aria-valuemax={limit}
                 aria-valuenow={Math.round(used)}
-                className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200/70"
+                className="relative mt-2.5 h-1.5 rounded-full bg-gray-100"
               >
                 <div
-                  className={`h-full rounded-full transition-[width] duration-300 ${used >= limit ? "bg-rose-500" : used / limit > 0.8 ? "bg-amber-500" : "bg-slate-900"}`}
+                  className={`h-full rounded-full transition-[width] duration-300 ${meterFill}`}
                   style={{ width: `${Math.min(100, (used / limit) * 100)}%` }}
                 />
               </div>
-              <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+              <div className="mt-2.5 flex items-center justify-between gap-2 text-[11px] text-fg-secondary">
                 <span>
-                  Remaining today <span data-testid="limit-remaining" className="font-mono font-medium tabular-nums text-slate-700">{formatAmount(remaining ?? 0)}</span> USDT · resets 00:00 UTC
+                  Remaining today{" "}
+                  <span data-testid="limit-remaining" className="font-mono font-semibold tabular-nums text-fg">
+                    {formatAmount(remaining ?? 0)}
+                  </span>{" "}
+                  USDT · resets 00:00 UTC
                 </span>
                 {tier === 1 && (
-                  <button
+                  <motion.button
                     type="button"
+                    whileTap={TAP}
+                    transition={SPRING}
                     onClick={openKycModal}
-                    className="shrink-0 rounded-md font-semibold text-slate-700 underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
+                    className={`${HIT} shrink-0 rounded-md text-xs font-bold text-amber-700 underline underline-offset-2 ${FOCUS}`}
                   >
                     Upgrade
-                  </button>
+                  </motion.button>
                 )}
               </div>
             </>
           )}
         </div>
 
-        <dl className="mt-4 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-100" aria-label="Fee and settlement breakdown">
+        <dl
+          className="mt-4 overflow-hidden rounded-2xl border border-gray-200 bg-canvas/40"
+          aria-label="Fee and settlement breakdown"
+        >
           {breakdown.map(([label, value]) => (
-            <div key={label} className="flex items-center justify-between px-3.5 py-2.5 text-sm">
-              <dt className="text-slate-500">{label}</dt>
+            <div
+              key={label}
+              className="flex items-center justify-between gap-3 border-b border-dashed border-gray-200 px-3.5 py-2.5 text-sm"
+            >
+              <dt className="text-fg-secondary">{label}</dt>
               <dd className="font-mono font-medium tabular-nums">{value}</dd>
             </div>
           ))}
-          <div className="flex items-center justify-between px-3.5 py-2.5 text-sm">
-            <dt className="flex items-center gap-1.5 text-slate-500">
+          <div className="flex items-center justify-between gap-3 border-b border-dashed border-gray-200 px-3.5 py-2.5 text-sm">
+            <dt className="flex items-center gap-1.5 text-fg-secondary">
               <Clock className="h-3.5 w-3.5" aria-hidden /> Est. arrival
             </dt>
             <dd className="font-mono font-medium">{WITHDRAWAL_ETA}</dd>
           </div>
-          <div className="flex items-center justify-between bg-slate-50 px-3.5 py-3 text-sm">
-            <dt className="font-semibold">Net receiving</dt>
-            <dd data-testid="net-receiving" className="font-mono text-base font-semibold tabular-nums text-emerald-600">
+          <div className="flex items-center justify-between gap-3 bg-emerald-500/10 px-3.5 py-3.5 text-sm">
+            <dt className="font-bold">Net receiving</dt>
+            <dd
+              data-testid="net-receiving"
+              className="font-mono text-lg font-extrabold tabular-nums text-emerald-700 [text-shadow:0_0_18px_rgba(16,185,129,0.45)]"
+            >
               {formatAmount(net)} USDT
             </dd>
           </div>
@@ -308,17 +353,17 @@ function WithdrawForm() {
 
         <motion.button
           type="button"
-          whileTap={canReview ? { scale: 0.98 } : undefined}
+          whileTap={canReview ? TAP_CTA : undefined}
           transition={SPRING}
           disabled={!canReview}
           onClick={() => {
             if (canReview && amount !== null) setDraft({ amount, address: trimmed, network });
           }}
-          className="mt-4 w-full rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:bg-slate-200 disabled:text-slate-400"
+          className={`${CTA} mt-4`}
         >
           Review Withdrawal
         </motion.button>
-        <p className="mt-2 text-center text-[11px] text-slate-400">
+        <p className="mt-3 text-center text-[11px] text-fg-muted">
           Minimum {formatAmount(MIN_WITHDRAWAL)} USDT · Funds are held until the transfer completes
         </p>
       </section>

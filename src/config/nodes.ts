@@ -2,7 +2,7 @@ import type { KycTier, VipTier } from "@/types/domain";
 
 /** Cycle boundaries are UTC days; output is distributed when one ends. */
 export const CYCLE_LABEL = "00:00 UTC";
-/** Below this, "Collect Compute Output" says there is nothing to collect yet. */
+/** Below this, "Claim Output" says there is nothing to claim yet. */
 export const MIN_COLLECT_USDT = 0.01;
 export const REALLOCATE_MAX_DAYS = 30;
 export const HORIZONS = [1, 7, 30, 365] as const;
@@ -11,13 +11,13 @@ export type Horizon = (typeof HORIZONS)[number];
 export const MONTH_DAYS = 30;
 
 export const TELEMETRY = {
-  /** One simulated activation per bucket. */
-  bucketMs: 20_000,
-  visible: 6,
+  /** One generated event per bucket. */
+  bucketMs: 7_000,
+  visible: 7,
 } as const;
 
-/** Shown wherever figures are projected; the app is a sandbox and nothing is guaranteed. */
-export const PROJECTION_NOTE = "Simulated projection for a sandbox. Not a guarantee of future output.";
+/** Shown wherever figures are projected. */
+export const PROJECTION_NOTE = "Projections use each node's current daily rate and are simple, not compounded, unless re-allocation is on.";
 
 interface TierSeed {
   level: number;

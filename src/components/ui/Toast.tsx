@@ -49,7 +49,7 @@ export function ToastHost() {
   const toasts = useToastStore((s) => s.toasts);
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center px-4">
+    <div className="pointer-events-none fixed inset-x-0 top-4 z-[80] flex justify-center px-4">
       <div
         className="flex w-full max-w-md flex-col items-center gap-2"
         role="status"
@@ -64,7 +64,13 @@ export function ToastHost() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -12, scale: 0.95 }}
               transition={{ type: "spring", stiffness: 500, damping: 32, mass: 0.8 }}
-              className="flex max-w-full items-center gap-2 rounded-[22px] border border-slate-800 bg-slate-950 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-slate-950/20"
+              className={`flex max-w-full items-center gap-2 rounded-[22px] border bg-gray-900/95 text-white px-4 py-2.5 text-sm font-semibold backdrop-blur-xl ${
+                t.kind === "success"
+                  ? "border-emerald-500/40 shadow-btn-green"
+                  : t.kind === "error"
+                    ? "border-rose-500/40 shadow-[0_0_20px_rgba(244,63,94,0.25)]"
+                    : "border-gray-200 shadow-card"
+              }`}
             >
               {ICONS[t.kind]}
               <span className="line-clamp-2 min-w-0 break-words">{t.message}</span>

@@ -52,7 +52,7 @@ export function QrCode({ value, label, className }: QrCodeProps) {
       <text
         x={offset + logo / 2}
         y={offset + logo / 2}
-        fill="#fff"
+        fill="#fbbf24"
         fontSize={logo * 0.62}
         fontWeight={700}
         fontFamily="ui-sans-serif, system-ui, sans-serif"

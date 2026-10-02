@@ -5,6 +5,7 @@ import { Lock } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 
 const TAP = { scale: 0.97 } as const;
+const TAP_CTA = { scale: 0.95 } as const;
 const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 
 interface Props {
@@ -22,33 +23,34 @@ export function GuestGate({ title, text, reason, compact = false }: Props) {
     <section
       aria-label={title}
       data-testid="guest-gate"
-      className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm"
+      className="relative overflow-hidden rounded-2xl border border-slate-100 bg-white p-5 shadow-card"
     >
-      <div className={compact ? "flex items-start gap-3" : "flex flex-col items-center text-center"}>
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+      <span aria-hidden className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-amber-400/10 blur-3xl" />
+      <div className={`relative ${compact ? "flex items-start gap-3" : "flex flex-col items-center text-center"}`}>
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-100 bg-amber-400/10 text-amber-700">
           <Lock className="h-5 w-5" aria-hidden />
         </span>
         <div className={compact ? "min-w-0" : "mt-3"}>
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <p className="mt-1 text-xs text-slate-500">{text}</p>
+          <h2 className="text-sm font-extrabold">{title}</h2>
+          <p className="mt-1 text-xs text-fg-secondary">{text}</p>
         </div>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-2">
+      <div className="relative mt-4 grid grid-cols-2 gap-2.5">
         <motion.button
           type="button"
           whileTap={TAP}
           transition={SPRING}
           onClick={() => openAuthModal("login", reason)}
-          className="rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold text-slate-900 outline-none transition-colors hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-slate-900"
+          className="min-h-11 rounded-2xl border border-gray-200 bg-surface py-3.5 text-sm font-semibold text-fg outline-none transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-amber-400"
         >
           Sign In
         </motion.button>
         <motion.button
           type="button"
-          whileTap={TAP}
+          whileTap={TAP_CTA}
           transition={SPRING}
           onClick={() => openAuthModal("register", reason)}
-          className="rounded-2xl bg-slate-950 py-3 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+          className="btn-primary min-h-11 rounded-2xl py-3.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
         >
           Create Account
         </motion.button>

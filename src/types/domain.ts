@@ -3,7 +3,7 @@
 export type IsoTimestamp = string;
 export type Usd = number;
 
-export type PaymentNetwork = "trc20" | "bep20" | "erc20";
+export type PaymentNetwork = "trc20" | "erc20" | "ton" | "bep20";
 
 export type TransactionStatus = "PENDING" | "COMPLETED";
 
@@ -84,7 +84,7 @@ export interface KycSubmission {
 
 export type UserRole = "user" | "admin";
 
-export type AuthTab = "login" | "register" | "forgot";
+export type AuthTab = "welcome" | "login" | "register" | "forgot";
 
 export interface SessionState {
   /** false: the session ends when the browser session does. */
@@ -121,8 +121,18 @@ export interface CheckInState {
   cycles: number;
 }
 
+export interface BoostState {
+  /** UTC day (YYYY-MM-DD) of the festival round the ticket was claimed in. */
+  ticketDay: string | null;
+  /** True once the first-activation bonus has been credited. */
+  bonusPaid: boolean;
+  bonusAmount?: Usd;
+}
+
 export interface RewardsState {
   checkIn: CheckInState;
+  /** Festival boost ticket; absent until the first claim. */
+  boost?: BoostState;
   tasks: Partial<Record<TaskId, TaskProgress>>;
   /** Lifetime check-in, mission and gift-code rewards. */
   totalBounty: Usd;
@@ -151,6 +161,10 @@ export interface UserProfile {
   /** UID of the account whose invite code was used at sign-up. */
   referredBy: string | null;
   displayName: string;
+  /** Unique sign-in name chosen at registration; absent on older accounts. */
+  username?: string;
+  /** ISO 3166-1 alpha-2 country picked at registration. */
+  country?: string;
   isGuest: boolean;
   /** Highest level granted so far. */
   kycTier: KycTier;
@@ -245,7 +259,23 @@ export interface AppNotification {
   read: boolean;
 }
 
-export type AppTab = "main" | "vaults" | "wallet" | "notifications" | "profile" | "tasks" | "admin";
+export type AppTab =
+  | "main"
+  | "vaults"
+  | "validator"
+  | "wallet"
+  | "notifications"
+  | "profile"
+  | "tasks"
+  | "support"
+  | "promos"
+  | "settings"
+  | "invite"
+  | "security"
+  | "language"
+  | "team"
+  | "about"
+  | "admin";
 export type Language = "en" | "ru";
 export type WalletSection = "deposit" | "withdraw" | "history";
 
@@ -256,4 +286,15 @@ export interface AccountSnapshot {
   positions: VaultPosition[];
   transactions: Transaction[];
   dailyAccrualDay: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  /** Short reference shown to the user, e.g. TKT-482913. */
+  ref: string;
+  subject: string;
+  message: string;
+  attachments: Array<{ name: string; size: number }>;
+  createdAt: IsoTimestamp;
+  status: "Open";
 }

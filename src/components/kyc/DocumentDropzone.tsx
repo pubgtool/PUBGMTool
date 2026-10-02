@@ -141,7 +141,7 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
 
   return (
     <div data-testid={`dropzone-${side}`} data-state={scanning ? "scanning" : ready ? "ready" : failed ? "error" : "empty"}>
-      <p className="text-xs font-semibold text-slate-700">{label}</p>
+      <p className="text-xs font-semibold text-fg">{label}</p>
       <div
         onDragEnter={(event) => {
           event.preventDefault();
@@ -161,8 +161,8 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
           const file = event.dataTransfer.files?.[0];
           if (file) void handleFile(file);
         }}
-        className={`relative mt-2 aspect-[1.586] w-full overflow-hidden rounded-2xl bg-slate-900 outline-dashed outline-2 -outline-offset-2 transition-colors ${
-          dragging ? "outline-amber-400" : ready ? "outline-transparent" : "outline-slate-600"
+        className={`relative mt-2 aspect-[1.586] w-full overflow-hidden rounded-2xl bg-canvas outline-dashed outline-2 -outline-offset-2 transition-colors ${
+          dragging ? "outline-amber-400" : ready ? "outline-transparent" : "outline-gray-300"
         }`}
       >
         {previewUrl && (
@@ -175,7 +175,7 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
         )}
         {showSample && <SampleArt />}
         {((scanning && !previewUrl && !showSample) || (ready && value?.kind === "pdf")) && (
-          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-300">
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500">
             <FileText className="h-9 w-9" aria-hidden />
             <span className="max-w-[80%] truncate text-xs">{scanning ? phase.name : value?.name}</span>
           </span>
@@ -184,9 +184,9 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
 
         {!scanning && !ready && (
           <span className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-6 text-center">
-            {failed ? <TriangleAlert className="h-7 w-7 text-rose-400" aria-hidden /> : <UploadCloud className="h-7 w-7 text-slate-300" aria-hidden />}
-            <span className="text-xs font-medium text-white">{dragging ? "Drop to upload" : "Drag & drop or choose a file"}</span>
-            <span className="text-[11px] text-slate-400">{hint}</span>
+            {failed ? <TriangleAlert className="h-7 w-7 text-rose-600" aria-hidden /> : <UploadCloud className="h-7 w-7 text-gray-400" aria-hidden />}
+            <span className="text-xs font-medium text-gray-900">{dragging ? "Drop to upload" : "Drag & drop or choose a file"}</span>
+            <span className="text-[11px] text-fg-secondary">{hint}</span>
           </span>
         )}
 
@@ -203,13 +203,13 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
         {scanning && (
           <span className="absolute inset-x-0 bottom-3 flex justify-center">
             <span className="flex items-center gap-1.5 rounded-full bg-slate-950/80 px-3 py-1.5 text-[11px] font-semibold text-white">
-              <ScanLine className="h-3.5 w-3.5 text-emerald-400" aria-hidden /> Scanning document…
+              <ScanLine className="h-3.5 w-3.5 text-emerald-600" aria-hidden /> Scanning document…
             </span>
           </span>
         )}
         {ready && (
           <span className="absolute inset-x-0 bottom-3 flex justify-center">
-            <span className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-[11px] font-semibold text-white shadow">
+            <span className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-[11px] font-bold text-slate-950 shadow-btn-green">
               <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Document aligned ✓
             </span>
           </span>
@@ -220,7 +220,11 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
         {scanning ? "Scanning document" : ready ? "Document aligned" : ""}
       </div>
       {failed && (
-        <p role="alert" data-testid={`dropzone-error-${side}`} className="mt-2 flex items-start gap-1.5 text-xs font-medium text-rose-600">
+        <p
+          role="alert"
+          data-testid={`dropzone-error-${side}`}
+          className="mt-2 flex items-start gap-1.5 rounded-xl bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-600"
+        >
           <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
           {phase.message}
         </p>
@@ -250,28 +254,32 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
 
       {ready ? (
         <div className="mt-2 flex items-center gap-2">
-          <p className="min-w-0 flex-1 truncate text-xs text-slate-500" data-testid={`file-meta-${side}`}>
-            {value?.kind === "sample" ? "Sandbox sample" : `${value?.name} · ${formatFileSize(value?.size ?? 0)}`}
+          <p className="min-w-0 flex-1 truncate text-xs text-fg-secondary" data-testid={`file-meta-${side}`}>
+            {value?.kind === "sample" ? "Demo sample" : `${value?.name} · ${formatFileSize(value?.size ?? 0)}`}
           </p>
-          <button
+          <motion.button
             type="button"
+            whileTap={TAP}
+            transition={SPRING}
             onClick={() => fileInput.current?.click()}
-            className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 outline-none hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-slate-900"
+            className="flex min-h-11 shrink-0 items-center gap-1 rounded-xl border border-gray-200 px-3 text-xs font-semibold text-fg outline-none transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-amber-400"
           >
             <RefreshCw className="h-3 w-3" aria-hidden /> Replace
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             type="button"
+            whileTap={TAP}
+            transition={SPRING}
             onClick={() => {
               attempt.current += 1;
               setPhase({ kind: "idle" });
               onChange(null);
             }}
             aria-label={`Remove ${label}`}
-            className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-rose-600 outline-none hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-500"
+            className="flex min-h-11 shrink-0 items-center gap-1 rounded-xl border border-gray-200 px-3 text-xs font-semibold text-rose-600 outline-none transition-colors hover:bg-rose-500/10 focus-visible:ring-2 focus-visible:ring-rose-400"
           >
             <Trash2 className="h-3 w-3" aria-hidden /> Remove
-          </button>
+          </motion.button>
         </div>
       ) : (
         <>
@@ -282,7 +290,7 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
               transition={SPRING}
               disabled={scanning}
               onClick={() => fileInput.current?.click()}
-              className="flex items-center justify-center gap-1.5 rounded-xl bg-slate-950 py-2.5 text-xs font-semibold text-white outline-none hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:bg-slate-300"
+              className="btn-primary flex min-h-11 items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
             >
               {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <UploadCloud className="h-3.5 w-3.5" aria-hidden />}
               Choose file
@@ -293,7 +301,7 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
               transition={SPRING}
               disabled={scanning}
               onClick={() => cameraInput.current?.click()}
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-semibold text-slate-800 outline-none hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-slate-900 disabled:opacity-50"
+              className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-surface py-2.5 text-xs font-semibold text-fg outline-none transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-amber-400 disabled:opacity-50"
             >
               <Camera className="h-3.5 w-3.5" aria-hidden /> Take photo
             </motion.button>
@@ -303,9 +311,9 @@ export function DocumentDropzone({ side, label, hint, value, onChange }: Props) 
             disabled={scanning}
             onClick={useSample}
             data-testid={`sample-${side}`}
-            className="mt-2 w-full rounded-lg py-1 text-center text-[11px] font-semibold text-slate-500 underline underline-offset-2 outline-none hover:text-slate-800 focus-visible:ring-2 focus-visible:ring-slate-900 disabled:opacity-50"
+            className="mt-1 min-h-11 w-full rounded-lg py-2 text-center text-xs font-semibold text-fg-secondary underline underline-offset-2 outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-amber-400 disabled:opacity-50"
           >
-            No file handy? Use a sandbox sample
+            No file handy? Use a demo sample
           </button>
         </>
       )}

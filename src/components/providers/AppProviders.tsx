@@ -28,8 +28,18 @@ function useAuthBoot(hydrated: boolean) {
     markBrowserSession();
 
     const url = new URL(window.location.href);
+    const lang = url.searchParams.get("lang");
+    if (lang === "ru" || lang === "en") {
+      store.setActiveLanguage(lang);
+      url.searchParams.delete("lang");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
     const param = REFERRAL_PARAMS.find((name) => url.searchParams.has(name));
-    if (!param) return;
+    if (!param) {
+      const fresh = useAppStore.getState();
+      if (fresh.user.isGuest && !fresh.hasSeenWelcome) fresh.openAuthModal("welcome");
+      return;
+    }
     const code = (url.searchParams.get(param) ?? "").trim();
     for (const name of REFERRAL_PARAMS) url.searchParams.delete(name);
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
@@ -37,6 +47,7 @@ function useAuthBoot(hydrated: boolean) {
     const current = useAppStore.getState();
     if (!current.user.isGuest || !REFERRAL_PATTERN.test(code)) return;
     current.setPendingReferral(code);
+    current.setHasSeenWelcome(true);
     current.openAuthModal("register", "You've been invited. Create an account to claim your trial voucher.");
   }, [hydrated]);
 }
@@ -48,7 +59,12 @@ function useAuthBoot(hydrated: boolean) {
  */
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const hydrated = useStoreHydration();
+  const language = useAppStore((s) => s.activeLanguage);
   useAuthBoot(hydrated);
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+  }, [language]);
 
   useEffect(() => {
     if (!hydrated) return;

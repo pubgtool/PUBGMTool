@@ -16,7 +16,7 @@ export function StepIndicator({ tier, steps, current }: Props) {
   const reduceMotion = useReducedMotion();
   return (
     <div>
-      <p data-testid="kyc-step-counter" className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
+      <p data-testid="kyc-step-counter" className="text-[11px] font-medium uppercase tracking-wider text-fg-muted">
         Step {Math.min(current + 1, steps.length)} of {steps.length}
       </p>
       <ol aria-label="Verification progress" className="mt-2 flex items-start">
@@ -36,20 +36,20 @@ export function StepIndicator({ tier, steps, current }: Props) {
                   transition={{ duration: 0.4 }}
                   className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold tabular-nums transition-colors duration-300 ${
                     state === "done"
-                      ? "bg-emerald-500 text-white"
+                      ? "bg-emerald-500 text-slate-950"
                       : state === "current"
-                        ? "bg-slate-950 text-white"
-                        : "bg-slate-100 text-slate-400"
+                        ? "btn-primary shadow-btn"
+                        : "bg-gray-100 text-fg-muted"
                   }`}
                 >
                   {state === "done" ? <Check className="h-3.5 w-3.5" aria-label="completed" /> : i + 1}
                 </motion.span>
-                <span className={`text-[10px] font-medium ${state === "todo" ? "text-slate-400" : "text-slate-700"}`}>
+                <span className={`text-[11px] font-semibold ${state === "todo" ? "text-fg-muted" : "text-fg"}`}>
                   {stepLabel(tier, id)}
                 </span>
               </div>
               {i < steps.length - 1 && (
-                <span className="relative mt-3.5 h-0.5 min-w-3 flex-1 overflow-hidden rounded-full bg-slate-100" aria-hidden>
+                <span className="relative mt-3.5 h-0.5 min-w-3 flex-1 overflow-hidden rounded-full bg-gray-100" aria-hidden>
                   <motion.span
                     className="absolute inset-y-0 left-0 rounded-full bg-emerald-500"
                     initial={false}

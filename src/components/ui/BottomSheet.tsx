@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 export const SheetTitle = Dialog.Title;
 export const SheetDescription = Dialog.Description;
 
-const SPRING = { type: "spring", stiffness: 420, damping: 38, mass: 0.9 } as const;
+const SPRING = { type: "spring", stiffness: 300, damping: 25 } as const;
 const DISMISS_OFFSET_PX = 120;
 const DISMISS_VELOCITY = 600;
 
@@ -23,6 +23,8 @@ interface BottomSheetProps {
   keyboardAware?: boolean;
   /** "dark" deepens the overlay for full-attention flows such as sign-in. */
   tone?: "default" | "dark";
+  /** Renders above full-screen overlays such as the auth screens. */
+  elevated?: boolean;
 }
 
 interface ViewportInset {
@@ -59,7 +61,7 @@ function useKeyboardInset(enabled: boolean): ViewportInset {
  * spring sheet that can be dragged down from the handle to dismiss. Pass
  * `SheetTitle` inside children for the accessible name.
  */
-export function BottomSheet({ open, onClose, children, keyboardAware = false, tone = "default" }: BottomSheetProps) {
+export function BottomSheet({ open, onClose, children, keyboardAware = false, tone = "default", elevated = false }: BottomSheetProps) {
   const controls = useDragControls();
   const inset = useKeyboardInset(keyboardAware && open);
   const reduceMotion = useReducedMotion();
@@ -79,14 +81,14 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false, to
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild forceMount>
               <motion.div
-                className={`fixed inset-0 z-[45] ${tone === "dark" ? "bg-slate-950/75 backdrop-blur-sm" : "bg-slate-950/40 backdrop-blur-[2px]"}`}
+                className={`fixed inset-0 ${elevated ? "z-[65]" : "z-[45]"} ${tone === "dark" ? "bg-black/50" : "bg-black/40"} backdrop-blur-md`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: reduceMotion ? 0 : 0.2 }}
               />
             </Dialog.Overlay>
-            <div className="fixed inset-x-0 bottom-0 z-[46] mx-auto max-w-md" style={{ bottom: inset.bottom }}>
+            <div className={`fixed inset-x-0 bottom-0 ${elevated ? "z-[66]" : "z-[46]"} mx-auto max-w-md`} style={{ bottom: inset.bottom }}>
               <Dialog.Content
                 asChild
                 forceMount
@@ -110,7 +112,7 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false, to
                   ref={contentRef}
                   tabIndex={-1}
                   style={inset.height ? ({ "--sheet-max": `${Math.floor(inset.height * 0.92)}px` } as React.CSSProperties) : undefined}
-                  className="max-h-[var(--sheet-max,92dvh)] overflow-y-auto overscroll-contain rounded-t-[28px] border border-b-0 border-slate-100 bg-white shadow-2xl outline-none"
+                  className="-mb-8 rounded-t-[28px] border border-b-0 border-slate-100 bg-surface pb-8 shadow-2xl outline-none"
                   initial={{ y: "100%" }}
                   animate={{ y: 0 }}
                   exit={{ y: "100%", transition: reduceMotion ? { duration: 0 } : { duration: 0.22, ease: [0.4, 0, 1, 1] } }}
@@ -129,9 +131,9 @@ export function BottomSheet({ open, onClose, children, keyboardAware = false, to
                     onPointerDown={(event) => controls.start(event)}
                     aria-hidden
                   >
-                    <span className="h-1 w-10 rounded-full bg-slate-200" />
+                    <span className="h-1 w-10 rounded-full bg-gray-300" />
                   </div>
-                  {children}
+                  <div className="max-h-[calc(var(--sheet-max,92dvh)-1.75rem)] overflow-y-auto overscroll-contain">{children}</div>
                 </motion.div>
               </Dialog.Content>
             </div>

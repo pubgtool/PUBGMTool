@@ -1,6 +1,6 @@
 import type { PaymentNetwork } from "@/types/domain";
 
-export type AddressFamily = "tron" | "evm";
+export type AddressFamily = "tron" | "evm" | "ton";
 
 export interface NetworkInfo {
   id: PaymentNetwork;
@@ -43,10 +43,21 @@ const ERC20: NetworkInfo = {
   note: "Ethereum mainnet. Uses an EVM address (0x…).",
 };
 
-export const NETWORKS: readonly NetworkInfo[] = [TRC20, BEP20, ERC20];
+const TON: NetworkInfo = {
+  id: "ton",
+  short: "TON",
+  label: "USDT-TON",
+  chain: "TON",
+  family: "ton",
+  tagShort: "Low fee",
+  tag: "Low fee",
+  note: "The Open Network. Uses a TON address (UQ… or EQ…).",
+};
+
+export const NETWORKS: readonly NetworkInfo[] = [TRC20, ERC20, TON, BEP20];
 
 export const getNetwork = (id: PaymentNetwork): NetworkInfo =>
-  ({ trc20: TRC20, bep20: BEP20, erc20: ERC20 })[id];
+  ({ trc20: TRC20, bep20: BEP20, erc20: ERC20, ton: TON })[id];
 
 export const MIN_DEPOSIT = 10;
 export const MIN_WITHDRAWAL = 10;
@@ -58,10 +69,12 @@ export const WITHDRAWAL_SETTLE_MS = 45_000;
 
 const TRON_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
 const EVM_RE = /^0x[a-fA-F0-9]{40}$/;
+const TON_RE = /^(?:EQ|UQ)[A-Za-z0-9_-]{46}$/;
 
 /** Family hinted by the first characters, for autodetect while typing. */
 export function guessFamily(input: string): AddressFamily | null {
   const value = input.trim();
+  if (/^(EQ|UQ)/.test(value)) return "ton";
   if (value.startsWith("T")) return "tron";
   if (/^0x/i.test(value)) return "evm";
   return null;
@@ -72,12 +85,13 @@ export function defaultNetworkFor(address: string): PaymentNetwork | null {
   const family = guessFamily(address);
   if (family === "tron") return "trc20";
   if (family === "evm") return "bep20";
+  if (family === "ton") return "ton";
   return null;
 }
 
 /** Valid on either family; used for the saved payout address. */
 export const isValidAddress = (address: string): boolean =>
-  TRON_RE.test(address) || EVM_RE.test(address);
+  TRON_RE.test(address) || EVM_RE.test(address) || TON_RE.test(address);
 
 export function addressError(address: string, network: PaymentNetwork): string | null {
   const value = address.trim();
@@ -87,6 +101,11 @@ export function addressError(address: string, network: PaymentNetwork): string |
     return TRON_RE.test(value)
       ? null
       : `Enter a valid Tron address for ${info.short} (starts with T, 34 characters).`;
+  }
+  if (info.family === "ton") {
+    return TON_RE.test(value)
+      ? null
+      : `Enter a valid TON address (starts with UQ or EQ, 48 characters).`;
   }
   return EVM_RE.test(value)
     ? null
@@ -122,6 +141,7 @@ function mulberry32(seed: number): () => number {
 }
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 const HEX = "0123456789abcdef";
 
 /**
@@ -133,6 +153,7 @@ export function depositAddressFor(seed: string, network: PaymentNetwork): string
   const rand = mulberry32(xmur3(`${seed}:${family}`)());
   const pick = (alphabet: string, length: number) =>
     Array.from({ length }, () => alphabet[Math.floor(rand() * alphabet.length)]).join("");
+  if (family === "ton") return `UQ${pick(BASE64URL, 46)}`;
   return family === "tron" ? `T${pick(BASE58, 33)}` : `0x${pick(HEX, 40)}`;
 }
 
@@ -141,5 +162,5 @@ export function mockTxHash(network: PaymentNetwork): string {
   if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
   else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  return getNetwork(network).family === "tron" ? hex : `0x${hex}`;
+  return getNetwork(network).family === "evm" ? `0x${hex}` : hex;
 }

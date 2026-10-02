@@ -36,7 +36,7 @@ export function DetailsStep({ api, now, showErrors, moveFocus }: Props) {
     <div className="flex flex-col gap-4">
       <div>
         <StepHeading moveFocus={moveFocus}>Personal details</StepHeading>
-        <p className="mt-1 text-xs text-slate-500">Enter them exactly as they appear on your identity document.</p>
+        <p className="mt-1 text-xs text-fg-secondary">Enter them exactly as they appear on your identity document.</p>
       </div>
 
       <Field id="kyc-name" label="Full name" error={shown("fullName")}>

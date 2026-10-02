@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { AUTH, ENGINE, PERSISTENCE, REFERRAL } from "@/config/protocol";
+import { AUTH, ENGINE, PERSISTENCE, REFERRAL, TICKETS } from "@/config/protocol";
 import { DOCUMENT_TYPES, DOCUMENT_TYPES_BY_TIER, KYC, rejectionReasonsFor } from "@/config/kyc";
 import { CHECK_IN_CYCLE, CHECK_IN_REWARDS, PROMO_RULES, getTaskDef, seedPromoCodes } from "@/config/rewards";
 import { checkInView, computeTaskBonus, mysteryBonus, normalizeCode, taskView } from "@/lib/rewards";
@@ -16,10 +16,13 @@ import {
 } from "@/lib/credentials";
 import { buildDemoAccount, DEMO_TIER } from "@/lib/demo";
 import { deriveNumericId, generateNumericId } from "@/lib/identity";
+import { FESTIVAL, bonusFor, hasPaidNode, ticketValid } from "@/lib/festival";
 import { canWithdraw, dailyLimitFor, getCountries, nextTier, remainingToday } from "@/lib/kyc";
 import { parseIdentifier, type IdentifierKind } from "@/lib/identifiers";
+import { looksLikeUsername, usernameIssue } from "@/lib/usernames";
 import { checkCode, consumeCode, issueCode } from "@/lib/passwordReset";
 import { markBrowserSession } from "@/lib/session";
+import { isValidTotpSecret, verifyTotp } from "@/lib/totp";
 import { MIN_COLLECT_USDT, seedTiers } from "@/config/nodes";
 import {
   BLOCK_MESSAGES,
@@ -61,6 +64,7 @@ import type {
   RewardsState,
   SecuritySettings,
   SessionState,
+  SupportTicket,
   TaskId,
   Transaction,
   TransactionType,
@@ -112,6 +116,10 @@ export type RegisterInput = {
   password: string;
   referralCode?: string | null;
   displayName?: string;
+  /** Unique sign-in name; shown as the display name. */
+  username?: string;
+  /** ISO 3166-1 alpha-2 country. */
+  country?: string;
 };
 
 export type KycSubmitInput = {
@@ -121,6 +129,12 @@ export type KycSubmitInput = {
   /** ISO alpha-2; required for level 1, carried over for level 2. */
   country?: string;
   livenessCompleted?: boolean;
+};
+
+export type TicketInput = {
+  subject: string;
+  message: string;
+  attachments?: Array<{ name: string; size: number }>;
 };
 
 export type LoginInput = { identifier: string; password: string; remember?: boolean };
@@ -144,7 +158,7 @@ export type TierPatch = Partial<Omit<VipTier, "id">>;
 export type NodeOptions = { useVoucher?: boolean };
 
 export type AllocationResult =
-  | { ok: true; id: string; kind: "activate" | "upgrade"; level: number; charged: number }
+  | { ok: true; id: string; kind: "activate" | "upgrade"; level: number; charged: number; bonus?: number }
   | { ok: false; error: string; reason?: BlockReason | "funds"; shortfall?: number };
 
 export type CollectResult = { ok: true; amount: number } | { ok: false; error: string };
@@ -162,6 +176,12 @@ export type NotificationInput = {
   body: string;
 };
 
+/** Local stand-ins for server-side secrets: a salted hash and a random key, never shown again after setup. */
+export interface AccountSecrets {
+  pin?: Credential;
+  totp?: string;
+}
+
 export interface StoreData {
   user: UserProfile;
   balances: WalletBalances;
@@ -174,10 +194,16 @@ export interface StoreData {
   /** Saved per-email state so logout/login round-trips restore the wallet. */
   accounts: Record<string, AccountSnapshot>;
   activeTab: AppTab;
+  /** Where a sub-screen (settings, team, about, promotions) returns to. Not persisted. */
+  backTab: AppTab | null;
   activeLanguage: Language;
   hasSeenAnnouncement: boolean;
+  /** True once the welcome gateway has been shown or skipped on this device. */
+  hasSeenWelcome: boolean;
   /** Salted password hashes by account key (email or +phone). */
   credentials: Record<string, Credential>;
+  /** Per-account transaction-password hash and authenticator key, keyed like `credentials`. */
+  secrets: Record<string, AccountSecrets>;
   session: SessionState;
   /** Invite code captured from a ?ref= link, offered at registration. */
   pendingReferral: string | null;
@@ -191,6 +217,8 @@ export interface StoreData {
   authModalReason: string | null;
   /** Gift codes shared by every account on this device. */
   promoCodes: PromoCode[];
+  /** Support requests raised on this device. */
+  tickets: SupportTicket[];
   /** Transient navigation intent (not persisted): section the Wallet tab opens on. */
   walletSection: WalletSection;
   /** Transient navigation intent (not persisted): tier the Vaults tab highlights. */
@@ -220,7 +248,23 @@ export interface StoreActions {
   openKycModal: () => void;
   closeKycModal: () => void;
   updatePayoutAddress: (address: string) => ActionResult;
+  /** Only the notification preference is a plain switch; the rest are set up in Account Security. */
   setSecurityPreference: (key: keyof SecuritySettings, value: boolean) => ActionResult;
+  /** Verifies the current password, then replaces it. */
+  changePassword: (input: { current: string; next: string }) => Promise<ActionResult>;
+  /** Sets or changes the 6-digit transaction password asked at withdrawal. Needs the login password. */
+  setPaymentPassword: (input: { loginPassword: string; next: string; current?: string }) => Promise<ActionResult>;
+  removePaymentPassword: (input: { loginPassword: string; current: string }) => Promise<ActionResult>;
+  /** Resolves OK when no transaction password is set. */
+  verifyPaymentPassword: (pin: string) => Promise<ActionResult>;
+  /** Turns authenticator two-factor on once the app's current code matches `secret`. */
+  enableTwoFactor: (input: { secret: string; code: string }) => Promise<ActionResult>;
+  disableTwoFactor: (input: { code: string; loginPassword: string }) => Promise<ActionResult>;
+  /** Resolves OK when two-factor is off. */
+  verifyTwoFactor: (code: string) => Promise<ActionResult>;
+  /** Sandbox: no email is sent; the code is returned so it can be shown on screen. */
+  requestEmailChange: (newEmail: string, now?: number) => ResetRequestResult;
+  confirmEmailChange: (input: { newEmail: string; code: string; loginPassword: string; now?: number }) => Promise<ActionResult>;
   /** Sandbox: registers a Tier 1 invite and credits its commission. */
   simulateReferral: () => ActionResult;
 
@@ -247,7 +291,10 @@ export interface StoreActions {
   claimPromoCode: (code: string, now?: number) => RewardResult;
   /** Issues a gift code; intended for the admin matrix. */
   createPromoCode: (input: PromoInput, now?: number) => ActionResult;
+  /** Festival ticket: valid for one UTC round, pays +50% on the first paid activation. */
+  claimBoostTicket: (now?: number) => ActionResult;
 
+  createTicket: (input: TicketInput) => ActionResult;
   pushNotification: (input: NotificationInput) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
@@ -256,6 +303,7 @@ export interface StoreActions {
   setActiveTab: (tab: AppTab) => void;
   setActiveLanguage: (language: Language) => void;
   setHasSeenAnnouncement: (seen?: boolean) => void;
+  setHasSeenWelcome: (seen?: boolean) => void;
   setWalletSection: (section: WalletSection) => void;
   setFocusedTierId: (id: string | null) => void;
 }
@@ -359,32 +407,23 @@ const emptyBalances = (): WalletBalances => ({
   dailyAccrued: 0,
 });
 
+/** Onboarding alerts every device starts with. Fixed times keep server and client renders identical. */
 function seedNotifications(): AppNotification[] {
+  const seed = (id: string, kind: NotificationKind, title: string, body: string, minute: number): AppNotification => ({
+    id: `ntf_seed_${id}`,
+    kind,
+    title,
+    body,
+    createdAt: `2026-09-29T00:${String(minute).padStart(2, "0")}:00.000Z`,
+    read: false,
+  });
   return [
-    {
-      id: "ntf_seed_1",
-      kind: "telemetry",
-      title: "Yield engine online",
-      body: "Daily income accrual is running. Plans accrue every second and settle to your available balance.",
-      createdAt: "2026-09-29T00:00:03.000Z",
-      read: false,
-    },
-    {
-      id: "ntf_seed_2",
-      kind: "system",
-      title: "Sandbox environment",
-      body: "All balances and income are simulated and stored in this browser. No real assets move.",
-      createdAt: "2026-09-29T00:00:02.000Z",
-      read: false,
-    },
-    {
-      id: "ntf_seed_3",
-      kind: "telemetry",
-      title: "Plan capacity update",
-      body: "VIP 6 capacity is 31% utilised. Register to claim a 50 USDT trial voucher.",
-      createdAt: "2026-09-29T00:00:01.000Z",
-      read: false,
-    },
+    seed("welcome", "system", "Welcome to NEXUS", "Your VIP compute dashboard is ready. Explore the node tiers and start producing daily output.", 50),
+    seed("checkin", "wallet", "Daily check-in is open", "Check in every day to build a streak. Day 7 pays 5.00 USDT plus a mystery reward.", 40),
+    seed("voucher", "wallet", "50.00 USDT trial voucher", "New accounts receive a 50.00 USDT trial voucher to put toward a first compute node.", 30),
+    seed("security", "account", "Secure your account", "Turn on two-factor authentication and verify your identity to unlock higher withdrawal limits.", 20),
+    seed("gift", "wallet", "Red envelope codes", "Redeem gift codes in Tasks & Rewards for an instant USDT bonus.", 10),
+    seed("networks", "system", "Supported networks", "Deposits and withdrawals support USDT on the TRC20, ERC20, TON and BEP20 networks.", 0),
   ];
 }
 
@@ -399,9 +438,12 @@ function createInitialData(): StoreData {
     notifications: seedNotifications(),
     accounts: {},
     activeTab: "main",
+    backTab: null,
     activeLanguage: "en",
     hasSeenAnnouncement: false,
+    hasSeenWelcome: false,
     credentials: {},
+    secrets: {},
     session: { remember: true },
     pendingReferral: null,
     isAuthModalOpen: false,
@@ -410,6 +452,7 @@ function createInitialData(): StoreData {
     authModalTab: "login",
     authModalReason: null,
     promoCodes: seedPromoCodes(),
+    tickets: [],
     walletSection: "deposit",
     focusedTierId: null,
   };
@@ -610,6 +653,7 @@ function enterAccount(s: StoreState, key: string, remember: boolean): Partial<St
     transactions: account.transactions,
     dailyAccrualDay: account.dailyAccrualDay,
     session: { remember },
+    hasSeenWelcome: true,
     isAuthModalOpen: false,
     authModalReason: null,
     notifications: prependNotifications(
@@ -625,7 +669,60 @@ function withoutRejection(user: UserProfile): UserProfile {
   return next;
 }
 
-const GENERIC_LOGIN_ERROR = "Incorrect email/phone or password.";
+const GENERIC_LOGIN_ERROR = "Incorrect username, email or password.";
+const USERNAME_TAKEN = "That username is taken.";
+
+function accountKeyByUsername(s: Pick<StoreData, "user" | "accounts">, name: string): string | null {
+  const wanted = name.trim().toLowerCase();
+  if (s.user.username?.toLowerCase() === wanted) return accountKeyOf(s.user);
+  for (const [key, snapshot] of Object.entries(s.accounts)) {
+    if (snapshot.user.username?.toLowerCase() === wanted) return key;
+  }
+  return null;
+}
+
+/** Email or phone as before, or a username. Unknown names get a synthetic key so they fail (and lock out) like unknown accounts. */
+function resolveLoginKey(s: Pick<StoreData, "user" | "accounts">, raw: string): { ok: true; key: string } | { ok: false; error: string } {
+  const text = raw.trim();
+  if (!text) return { ok: false, error: "Enter your username or email." };
+  if (looksLikeUsername(text) && !/^\+?\d{8,15}$/.test(text)) return { ok: true, key: accountKeyByUsername(s, text) ?? `username:${text.toLowerCase()}` };
+  const parsed = parseIdentifier(text);
+  return parsed.ok ? { ok: true, key: parsed.key } : { ok: false, error: parsed.error };
+}
+
+/** Re-checks the signed-in account's login password; shares the sign-in lockout. */
+async function checkLoginPassword(s: StoreState, password: string): Promise<ActionResult> {
+  const key = accountKeyOf(s.user);
+  const credential = key ? s.credentials[key] : undefined;
+  if (!key || !credential) return fail("This account has no password yet. Use Forgot password to set one.");
+  if (!password) return fail("Enter your login password.");
+  const locked = lockoutRemaining(key, Date.now());
+  if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
+  if (!(await verifyPassword(password, credential))) {
+    recordFailure(key, Date.now());
+    return fail("Login password is incorrect.");
+  }
+  clearFailures(key);
+  return OK;
+}
+
+/** Six digits, and not a repeat or a straight run. */
+function pinIssue(pin: string): string | null {
+  if (!/^\d{6}$/.test(pin)) return "Use exactly 6 digits.";
+  if (/^(\d)\1{5}$/.test(pin) || "0123456789".includes(pin) || "9876543210".includes(pin)) return "Avoid repeated digits and simple sequences.";
+  return null;
+}
+
+function withoutKey<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  const copy = { ...value };
+  delete copy[key];
+  return copy;
+}
+
+function moveKey<T>(record: Record<string, T>, from: string, to: string): Record<string, T> {
+  const { [from]: moved, ...rest } = record;
+  return moved === undefined ? rest : { ...rest, [to]: moved };
+}
 
 function validateTier(tier: VipTier, others: VipTier[]): string | null {
   if (!tier.name.trim()) return "Tier name is required.";
@@ -673,11 +770,16 @@ const PERSISTED_KEYS = [
   "activeTab",
   "activeLanguage",
   "hasSeenAnnouncement",
+  "hasSeenWelcome",
   "credentials",
+  "secrets",
   "session",
   "pendingReferral",
   "promoCodes",
+  "tickets",
 ] as const satisfies ReadonlyArray<keyof StoreData>;
+
+const SUB_TABS: readonly AppTab[] = ["settings", "team", "about", "promos", "invite", "security", "language"];
 
 export const useAppStore = create<StoreState>()(
   persist(
@@ -687,28 +789,29 @@ export const useAppStore = create<StoreState>()(
       /* ---------------- Auth ---------------- */
 
       login: async ({ identifier, password, remember = true }) => {
-        const parsed = parseIdentifier(identifier);
-        if (!parsed.ok) return fail(parsed.error);
+        const resolved = resolveLoginKey(get(), identifier);
+        if (!resolved.ok) return fail(resolved.error);
+        const loginKey = resolved.key;
         if (!password) return fail("Enter your password.");
 
-        const locked = lockoutRemaining(parsed.key, Date.now());
+        const locked = lockoutRemaining(loginKey, Date.now());
         if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
 
         const before = get();
-        if (accountKeyOf(before.user) === parsed.key) return OK;
-        const credential = before.credentials[parsed.key];
-        if (before.accounts[parsed.key] && !credential)
+        if (accountKeyOf(before.user) === loginKey) return OK;
+        const credential = before.credentials[loginKey];
+        if (before.accounts[loginKey] && !credential)
           return fail("This account has no password yet. Use Forgot password to set one.");
 
         // Unknown accounts fail the same way and count toward the lockout, so responses don't reveal which exist.
         const valid = credential ? await verifyPassword(password, credential) : false;
         if (!valid) {
-          recordFailure(parsed.key, Date.now());
+          recordFailure(loginKey, Date.now());
           return fail(GENERIC_LOGIN_ERROR);
         }
-        clearFailures(parsed.key);
+        clearFailures(loginKey);
 
-        const patch = enterAccount(get(), parsed.key, remember);
+        const patch = enterAccount(get(), loginKey, remember);
         if (!patch) return fail(GENERIC_LOGIN_ERROR);
         set(patch);
         if (!remember) markBrowserSession();
@@ -716,16 +819,22 @@ export const useAppStore = create<StoreState>()(
         return OK;
       },
 
-      register: async ({ identifier, kind, password, referralCode, displayName }) => {
+      register: async ({ identifier, kind, password, referralCode, displayName, username, country }) => {
         const parsed = parseIdentifier(identifier, kind);
         if (!parsed.ok) return fail(parsed.error);
         const issue = passwordIssue(password);
         if (issue) return fail(issue);
+        const handle = username?.trim() || undefined;
+        if (handle) {
+          const nameIssue = usernameIssue(handle);
+          if (nameIssue) return fail(nameIssue);
+        }
 
         const duplicate = `An account with this ${parsed.kind === "email" ? "email" : "phone number"} already exists.`;
         const s0 = get();
         if (!s0.user.isGuest) return fail("Sign out before creating another account.");
         if (isReserved(parsed.key) || s0.accounts[parsed.key]) return fail(duplicate);
+        if (handle && accountKeyByUsername(s0, handle)) return fail(USERNAME_TAKEN);
 
         const code = referralCode?.trim() ?? "";
         if (AUTH.referralRequired && !findReferrer(s0, code)) return fail("Enter a valid referral code.");
@@ -736,6 +845,7 @@ export const useAppStore = create<StoreState>()(
         const s = get();
         if (!s.user.isGuest) return fail("You're already signed in.");
         if (s.accounts[parsed.key]) return fail(duplicate);
+        if (handle && accountKeyByUsername(s, handle)) return fail(USERNAME_TAKEN);
         const referrer = code ? findReferrer(s, code) : null;
 
         const now = Date.now();
@@ -745,6 +855,7 @@ export const useAppStore = create<StoreState>()(
         const inviteCode = generateNumericId(taken);
 
         const name = displayName?.trim().slice(0, 32);
+        const countryCode = country && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : undefined;
         const user: UserProfile = {
           id: uid("usr"),
           email: parsed.kind === "email" ? parsed.key : null,
@@ -752,7 +863,9 @@ export const useAppStore = create<StoreState>()(
           uid: uidValue,
           referralCode: inviteCode,
           referredBy: referrer?.user.uid ?? null,
-          displayName: name || (parsed.kind === "email" ? (parsed.key.split("@")[0] ?? "Member") : `Member${parsed.key.slice(-4)}`),
+          displayName: name || handle || (parsed.kind === "email" ? (parsed.key.split("@")[0] ?? "Member") : `Member${parsed.key.slice(-4)}`),
+          ...(handle ? { username: handle } : {}),
+          ...(countryCode ? { country: countryCode } : {}),
           isGuest: false,
           kycTier: 0,
           kycStatus: "NONE",
@@ -785,6 +898,7 @@ export const useAppStore = create<StoreState>()(
           credentials: { ...s.credentials, [parsed.key]: credential },
           session: { remember: true },
           pendingReferral: null,
+          hasSeenWelcome: true,
           isAuthModalOpen: false,
           authModalReason: null,
           user,
@@ -878,6 +992,243 @@ export const useAppStore = create<StoreState>()(
         return OK;
       },
 
+      changePassword: async ({ current, next }) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to change your password.");
+        const key = accountKeyOf(s.user);
+        const checked = await checkLoginPassword(s, current);
+        if (!checked.ok) return fail(checked.error === "Login password is incorrect." ? "Current password is incorrect." : checked.error);
+        const issue = passwordIssue(next);
+        if (issue) return fail(issue);
+        if (next === current) return fail("Choose a different password from the current one.");
+        const credential = await hashPassword(next);
+        const s2 = get();
+        if (!key || accountKeyOf(s2.user) !== key) return fail("Your session changed. Sign in again.");
+        set({
+          credentials: { ...s2.credentials, [key]: credential },
+          notifications: prependNotifications(
+            s2.notifications,
+            makeNotification({ kind: "account", title: "Password changed", body: "Your login password was updated." }),
+          ),
+        });
+        return OK;
+      },
+
+      setPaymentPassword: async ({ loginPassword, next, current }) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        if (s.user.isGuest || !key) return fail("Sign in to set a transaction password.");
+        const problem = pinIssue(next);
+        if (problem) return fail(problem);
+        const checked = await checkLoginPassword(s, loginPassword);
+        if (!checked.ok) return checked;
+        const existing = s.secrets[key]?.pin;
+        if (existing) {
+          const pinKey = `pin:${key}`;
+          const locked = lockoutRemaining(pinKey, Date.now());
+          if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
+          if (!current || !(await verifyPassword(current, existing))) {
+            recordFailure(pinKey, Date.now());
+            return fail("Current transaction password is incorrect.");
+          }
+          clearFailures(pinKey);
+        }
+        const credential = await hashPassword(next);
+        const s2 = get();
+        if (accountKeyOf(s2.user) !== key) return fail("Your session changed. Sign in again.");
+        set({
+          secrets: { ...s2.secrets, [key]: { ...s2.secrets[key], pin: credential } },
+          user: { ...s2.user, security: { ...s2.user.security, paymentPin: true } },
+          notifications: prependNotifications(
+            s2.notifications,
+            makeNotification({
+              kind: "account",
+              title: existing ? "Transaction password changed" : "Transaction password set",
+              body: "Withdrawals now ask for your 6-digit transaction password.",
+            }),
+          ),
+        });
+        return OK;
+      },
+
+      removePaymentPassword: async ({ loginPassword, current }) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        const existing = key ? s.secrets[key]?.pin : undefined;
+        if (s.user.isGuest || !key || !existing) return fail("No transaction password is set.");
+        const checked = await checkLoginPassword(s, loginPassword);
+        if (!checked.ok) return checked;
+        const pinKey = `pin:${key}`;
+        const locked = lockoutRemaining(pinKey, Date.now());
+        if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
+        if (!(await verifyPassword(current, existing))) {
+          recordFailure(pinKey, Date.now());
+          return fail("Current transaction password is incorrect.");
+        }
+        clearFailures(pinKey);
+        const s2 = get();
+        if (accountKeyOf(s2.user) !== key) return fail("Your session changed. Sign in again.");
+        const rest = withoutKey(s2.secrets[key] ?? {}, "pin");
+        set({
+          secrets: { ...s2.secrets, [key]: rest },
+          user: { ...s2.user, security: { ...s2.user.security, paymentPin: false } },
+          notifications: prependNotifications(
+            s2.notifications,
+            makeNotification({ kind: "account", title: "Transaction password removed", body: "Withdrawals no longer ask for a transaction password." }),
+          ),
+        });
+        return OK;
+      },
+
+      verifyPaymentPassword: async (pin) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        if (s.user.isGuest || !key) return fail("Sign in first.");
+        const existing = s.secrets[key]?.pin;
+        if (!existing) return OK;
+        const pinKey = `pin:${key}`;
+        const locked = lockoutRemaining(pinKey, Date.now());
+        if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
+        if (!/^\d{6}$/.test(pin) || !(await verifyPassword(pin, existing))) {
+          recordFailure(pinKey, Date.now());
+          return fail("Incorrect transaction password.");
+        }
+        clearFailures(pinKey);
+        return OK;
+      },
+
+      enableTwoFactor: async ({ secret, code }) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        if (s.user.isGuest || !key) return fail("Sign in to turn on two-factor authentication.");
+        if (s.secrets[key]?.totp) return fail("Two-factor authentication is already on.");
+        if (!isValidTotpSecret(secret)) return fail("The setup key is invalid. Start again.");
+        if (!/^\d{6}$/.test(code)) return fail("Enter the 6-digit code from your authenticator app.");
+        const totpKey = `totp:${key}`;
+        const locked = lockoutRemaining(totpKey, Date.now());
+        if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
+        let valid = false;
+        try {
+          valid = await verifyTotp(secret, code, Date.now());
+        } catch {
+          return fail("Authenticator codes need a secure (https) connection.");
+        }
+        if (!valid) {
+          recordFailure(totpKey, Date.now());
+          return fail("That code doesn't match. Check the clock on your phone and try again.");
+        }
+        clearFailures(totpKey);
+        const s2 = get();
+        if (accountKeyOf(s2.user) !== key) return fail("Your session changed. Sign in again.");
+        set({
+          secrets: { ...s2.secrets, [key]: { ...s2.secrets[key], totp: secret } },
+          user: { ...s2.user, security: { ...s2.user.security, twoFactor: true } },
+          notifications: prependNotifications(
+            s2.notifications,
+            makeNotification({ kind: "account", title: "Two-factor authentication enabled", body: "Withdrawals now ask for a code from your authenticator app." }),
+          ),
+        });
+        return OK;
+      },
+
+      disableTwoFactor: async ({ code, loginPassword }) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        const secret = key ? s.secrets[key]?.totp : undefined;
+        if (s.user.isGuest || !key || !secret) return fail("Two-factor authentication is not on.");
+        const checked = await checkLoginPassword(s, loginPassword);
+        if (!checked.ok) return checked;
+        const verified = await get().verifyTwoFactor(code);
+        if (!verified.ok) return verified;
+        const s2 = get();
+        if (accountKeyOf(s2.user) !== key) return fail("Your session changed. Sign in again.");
+        const rest = withoutKey(s2.secrets[key] ?? {}, "totp");
+        set({
+          secrets: { ...s2.secrets, [key]: rest },
+          user: { ...s2.user, security: { ...s2.user.security, twoFactor: false } },
+          notifications: prependNotifications(
+            s2.notifications,
+            makeNotification({ kind: "account", title: "Two-factor authentication disabled", body: "Two-factor authentication was turned off for your account." }),
+          ),
+        });
+        return OK;
+      },
+
+      verifyTwoFactor: async (code) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        if (s.user.isGuest || !key) return fail("Sign in first.");
+        const secret = s.secrets[key]?.totp;
+        if (!secret) return OK;
+        const totpKey = `totp:${key}`;
+        const locked = lockoutRemaining(totpKey, Date.now());
+        if (locked > 0) return fail(`Too many attempts. Try again in ${Math.ceil(locked / 1000)}s.`);
+        let valid = false;
+        try {
+          valid = await verifyTotp(secret, code, Date.now());
+        } catch {
+          return fail("Authenticator codes need a secure (https) connection.");
+        }
+        if (!valid) {
+          recordFailure(totpKey, Date.now());
+          return fail("Incorrect authenticator code.");
+        }
+        clearFailures(totpKey);
+        return OK;
+      },
+
+      requestEmailChange: (newEmail, now = Date.now()) => {
+        const s = get();
+        const key = accountKeyOf(s.user);
+        if (s.user.isGuest || !key) return fail("Sign in to change your email.");
+        if (!s.user.email) return fail("This account signs in with a phone number, so there is no email to change.");
+        if (isReserved(key)) return fail("The demo account can't change its email.");
+        const parsed = parseIdentifier(newEmail, "email");
+        if (!parsed.ok) return fail(parsed.error);
+        if (parsed.key === key) return fail("That is already your email.");
+        if (isReserved(parsed.key) || s.accounts[parsed.key] || s.credentials[parsed.key]) return fail("An account with this email already exists.");
+        const issued = issueCode(`email:${parsed.key}`, now);
+        if (!issued.ok) return fail(issued.error);
+        return { ok: true, sandboxCode: issued.code, cooldownUntil: issued.cooldownUntil, expiresAt: issued.expiresAt, reused: issued.reused };
+      },
+
+      confirmEmailChange: async ({ newEmail, code, loginPassword, now = Date.now() }) => {
+        const s = get();
+        const oldKey = accountKeyOf(s.user);
+        if (s.user.isGuest || !oldKey || !s.user.email) return fail("Sign in to change your email.");
+        if (isReserved(oldKey)) return fail("The demo account can't change its email.");
+        const parsed = parseIdentifier(newEmail, "email");
+        if (!parsed.ok) return fail(parsed.error);
+        const newKey = parsed.key;
+        if (newKey === oldKey) return fail("That is already your email.");
+        if (isReserved(newKey) || s.accounts[newKey] || s.credentials[newKey]) return fail("An account with this email already exists.");
+        if (!new RegExp(`^\\d{${AUTH.otp.length}}$`).test(code)) return fail(`Enter the ${AUTH.otp.length}-digit code.`);
+        const checked = await checkLoginPassword(s, loginPassword);
+        if (!checked.ok) return checked;
+        const verified = checkCode(`email:${newKey}`, code, now);
+        if (!verified.ok) return fail(verified.error);
+
+        const s2 = get();
+        if (accountKeyOf(s2.user) !== oldKey) return fail("Your session changed. Sign in again.");
+        const accounts = snapshotAccounts(s2);
+        const snapshot = accounts[oldKey];
+        if (!snapshot) return fail("Account not found.");
+        const user = { ...s2.user, email: newKey };
+        set({
+          accounts: { ...moveKey(accounts, oldKey, newKey), [newKey]: { ...snapshot, user } },
+          credentials: moveKey(s2.credentials, oldKey, newKey),
+          secrets: moveKey(s2.secrets, oldKey, newKey),
+          user,
+          notifications: prependNotifications(
+            s2.notifications,
+            makeNotification({ kind: "account", title: "Email changed", body: `Sign in with ${newKey} from now on.` }),
+          ),
+        });
+        consumeCode(`email:${newKey}`);
+        clearFailures(oldKey);
+        return OK;
+      },
+
       openAuthModal: (tab = "login", reason = null) =>
         set({ isAuthModalOpen: true, authModalTab: tab, authModalReason: reason }),
 
@@ -899,6 +1250,7 @@ export const useAppStore = create<StoreState>()(
           dailyAccrualDay: utcDay(Date.now()),
           session: { remember: true },
           activeTab: "main",
+          backTab: null,
           walletSection: "deposit",
           focusedTierId: null,
           isAuthModalOpen: false,
@@ -1024,22 +1376,9 @@ export const useAppStore = create<StoreState>()(
       setSecurityPreference: (key, value) => {
         const s = get();
         if (s.user.isGuest) return fail("Sign in to change security settings.");
-        if (!(key in s.user.security)) return fail("Unknown setting.");
+        if (key !== "pushAlerts") return fail("Set this up in Account Security.");
         if (s.user.security[key] === value) return OK;
-        const label = key === "twoFactor" ? "Two-factor authentication" : key === "paymentPin" ? "Payment PIN" : null;
-        set({
-          user: { ...s.user, security: { ...s.user.security, [key]: value } },
-          notifications: label
-            ? prependNotifications(
-                s.notifications,
-                makeNotification({
-                  kind: "account",
-                  title: `${label} ${value ? "enabled" : "disabled"}`,
-                  body: `${label} was turned ${value ? "on" : "off"} for your account.`,
-                }),
-              )
-            : s.notifications,
-        });
+        set({ user: { ...s.user, security: { ...s.user.security, [key]: value } } });
         return OK;
       },
 
@@ -1160,14 +1499,14 @@ export const useAppStore = create<StoreState>()(
           transactions: prependTx(
             s.transactions,
             makeTx("adjustment", next.available - s.balances.available, {
-              note: `Sandbox override: ${entries.map(([k]) => k).join(", ")}`,
+              note: `Demo override: ${entries.map(([k]) => k).join(", ")}`,
             }),
           ),
           notifications: prependNotifications(
             s.notifications,
             makeNotification({
               kind: "system",
-              title: "Sandbox balance override",
+              title: "Demo balance override",
               body: `Admin override applied to: ${entries.map(([k]) => k).join(", ")}.`,
             }),
           ),
@@ -1357,7 +1696,7 @@ export const useAppStore = create<StoreState>()(
             (quote.voucherApplied > 0 ? ` (+${fmt(quote.voucherApplied)} voucher)` : ""),
         });
 
-        set({
+        const base = {
           balances: {
             ...s.balances,
             available: round6(s.balances.available - quote.cashDue),
@@ -1384,8 +1723,39 @@ export const useAppStore = create<StoreState>()(
                     : `${tier.name} ${tier.title} is running: ${fmt(tierDailyOutput(tier))} USDT per day.`,
             }),
           ),
-        });
-        return { ok: true, id: fresh.id, kind, level: tier.level, charged: quote.cashDue };
+        };
+        const rewards = s.user.rewards;
+        // The festival pays +50% once, on the first node that costs something, while a ticket is held.
+        const bonus = tier.feeUsdt > 0 && !hasPaidNode(s.positions) && ticketValid(rewards.boost, now) ? bonusFor(tier.feeUsdt) : 0;
+        set(
+          bonus > 0
+            ? {
+                ...base,
+                balances: { ...base.balances, available: round6(base.balances.available + bonus) },
+                transactions: prependTx(
+                  base.transactions,
+                  makeTx("bounty", bonus, { note: `Festival first-activation bonus (+${FESTIVAL.bonusPct}%)` }),
+                ),
+                notifications: prependNotifications(
+                  base.notifications,
+                  makeNotification({
+                    kind: "wallet",
+                    title: "Festival bonus credited",
+                    body: `${fmt(bonus)} USDT (+${FESTIVAL.bonusPct}% of your ${fmt(tier.feeUsdt)} USDT first activation) was added to your available balance.`,
+                  }),
+                ),
+                user: {
+                  ...s.user,
+                  rewards: {
+                    ...rewards,
+                    totalBounty: round6(rewards.totalBounty + bonus),
+                    boost: { ticketDay: rewards.boost?.ticketDay ?? null, bonusPaid: true, bonusAmount: bonus },
+                  },
+                },
+              }
+            : base,
+        );
+        return { ok: true, id: fresh.id, kind, level: tier.level, charged: quote.cashDue, ...(bonus > 0 ? { bonus } : {}) };
       },
 
       collectOutput: (now = Date.now()) => {
@@ -1658,6 +2028,28 @@ export const useAppStore = create<StoreState>()(
         return { ok: true, id: get().transactions[0]?.id ?? "", amount };
       },
 
+      claimBoostTicket: (now = Date.now()) => {
+        const s = get();
+        if (s.user.isGuest) return fail("Sign in to claim your boost ticket.");
+        const boost = s.user.rewards.boost ?? { ticketDay: null, bonusPaid: false };
+        if (boost.bonusPaid) return fail("Your first-activation bonus has already been credited.");
+        if (hasPaidNode(s.positions)) return fail("The boost applies to a first paid activation, and your node is already running.");
+        const today = utcDay(now);
+        if (boost.ticketDay === today) return fail("Your boost ticket for this round is already active.");
+        set({
+          user: { ...s.user, rewards: { ...s.user.rewards, boost: { ...boost, ticketDay: today } } },
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({
+              kind: "wallet",
+              title: "Boost ticket claimed",
+              body: `Activate your first paid node before 00:00 UTC to receive +${FESTIVAL.bonusPct}% as a bonus.`,
+            }),
+          ),
+        });
+        return OK;
+      },
+
       createPromoCode: (input, now = Date.now()) => {
         const s = get();
         // Strict on purpose: never issue a code that differs from what the admin typed.
@@ -1695,6 +2087,38 @@ export const useAppStore = create<StoreState>()(
 
       /* ---------------- Notifications ---------------- */
 
+      createTicket: ({ subject, message, attachments = [] }) => {
+        const s = get();
+        if (!TICKETS.subjects.includes(subject)) return fail("Choose what your request is about.");
+        const text = message.trim();
+        if (text.length < TICKETS.minMessage) return fail(`Describe your request in at least ${TICKETS.minMessage} characters.`);
+        if (text.length > TICKETS.maxMessage) return fail(`Keep it under ${TICKETS.maxMessage} characters.`);
+        if (attachments.length > TICKETS.maxAttachments) return fail(`Attach at most ${TICKETS.maxAttachments} files.`);
+        if (attachments.some((a) => !a.name || a.size <= 0 || a.size > TICKETS.maxAttachmentBytes))
+          return fail("One of the attachments is not valid.");
+        const taken = new Set(s.tickets.map((t) => t.ref));
+        let ref = "";
+        do ref = `TKT-${100_000 + Math.floor(Math.random() * 900_000)}`;
+        while (taken.has(ref));
+        const ticket: SupportTicket = {
+          id: uid("tkt"),
+          ref,
+          subject,
+          message: text,
+          attachments: attachments.map((a) => ({ name: a.name.slice(0, 120), size: a.size })),
+          createdAt: new Date().toISOString(),
+          status: "Open",
+        };
+        set({
+          tickets: [ticket, ...s.tickets].slice(0, TICKETS.max),
+          notifications: prependNotifications(
+            s.notifications,
+            makeNotification({ kind: "system", title: "Support ticket created", body: `${ref} · ${subject}` }),
+          ),
+        });
+        return okWith(ref);
+      },
+
       pushNotification: (input) =>
         set((s) => ({ notifications: prependNotifications(s.notifications, makeNotification(input)) })),
 
@@ -1715,9 +2139,14 @@ export const useAppStore = create<StoreState>()(
 
       /* ---------------- UI state ---------------- */
 
-      setActiveTab: (activeTab) => set({ activeTab }),
+      setActiveTab: (activeTab) =>
+        set((s) => ({
+          activeTab,
+          backTab: SUB_TABS.includes(activeTab) ? (SUB_TABS.includes(s.activeTab) ? s.backTab : s.activeTab) : null,
+        })),
       setActiveLanguage: (activeLanguage) => set({ activeLanguage }),
       setHasSeenAnnouncement: (seen = true) => set({ hasSeenAnnouncement: seen }),
+      setHasSeenWelcome: (seen = true) => set({ hasSeenWelcome: seen }),
       setWalletSection: (walletSection) => set({ walletSection }),
       setFocusedTierId: (focusedTierId) => set({ focusedTierId }),
     }),
@@ -1826,6 +2255,11 @@ export const useAppStore = create<StoreState>()(
             if (Array.isArray(account.positions)) account.positions = withPending(account.positions);
           }
         }
+        // v8 -> v9: fresh onboarding alerts replace the original seed notifications.
+        if (version < 9 && Array.isArray(state.notifications)) {
+          const kept = (state.notifications as Array<{ id?: unknown }>).filter((n) => !String(n.id ?? "").startsWith("ntf_seed_"));
+          state.notifications = [...seedNotifications(), ...kept];
+        }
         return state as unknown as StoreState;
       },
     },
@@ -1844,6 +2278,17 @@ export const selectPendingOutput = (s: StoreState): Usd => totalPending(s.positi
 
 /** Collected today plus still pending: what "today's profit" means on screen. */
 export const selectTodayProfit = (s: StoreState): Usd => s.balances.dailyAccrued + totalPending(s.positions);
+
+/** Enabled means a secret is stored; the boolean on `user.security` is only a mirror and can be stale in old saved data. */
+export const selectHasPaymentPassword = (s: StoreState): boolean => {
+  const key = accountKeyOf(s.user);
+  return Boolean(key && s.secrets[key]?.pin);
+};
+
+export const selectHasTwoFactor = (s: StoreState): boolean => {
+  const key = accountKeyOf(s.user);
+  return Boolean(key && s.secrets[key]?.totp);
+};
 
 export const selectUnreadCount = (s: StoreState): number =>
   s.notifications.reduce((n, item) => n + (item.read ? 0 : 1), 0);
@@ -1872,4 +2317,9 @@ export function useStoreHydration(): boolean {
   }, []);
 
   return hydrated;
+}
+
+/** Dev-only handle for browser QA (removed from production builds). */
+if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+  (window as unknown as { __store: typeof useAppStore }).__store = useAppStore;
 }

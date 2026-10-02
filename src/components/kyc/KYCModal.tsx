@@ -95,22 +95,24 @@ export function KYCModal() {
         <div>
           <div className="flex items-start justify-between gap-3 px-5 pb-4">
             <div className="flex min-w-0 items-center gap-3">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white">
+              <span className="btn-primary flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-btn">
                 <ShieldCheck className="h-5 w-5" aria-hidden />
               </span>
               <div className="min-w-0">
-                <SheetTitle className="truncate text-lg font-semibold leading-tight tracking-tight">{heading.title}</SheetTitle>
-                <SheetDescription className="truncate text-xs text-slate-500">{heading.text}</SheetDescription>
+                <SheetTitle className="truncate text-lg font-extrabold leading-tight tracking-tight">{heading.title}</SheetTitle>
+                <SheetDescription className="truncate text-xs text-fg-secondary">{heading.text}</SheetDescription>
               </div>
             </div>
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 500, damping: 30 }}
               onClick={close}
               aria-label="Close"
-              className="rounded-full bg-slate-100 p-2 text-slate-500 outline-none transition-colors hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-slate-900"
+              className="-mr-1.5 -mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-canvas/60 text-fg-secondary outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-amber-400"
             >
               <X className="h-4 w-4" aria-hidden />
-            </button>
+            </motion.button>
           </div>
 
           <AnimatePresence mode="wait" initial={false}>

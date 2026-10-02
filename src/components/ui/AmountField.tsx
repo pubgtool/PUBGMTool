@@ -33,8 +33,10 @@ export function AmountField({
 
   return (
     <div
-      className={`flex items-baseline gap-2 rounded-2xl border bg-white px-4 py-3 transition-colors focus-within:border-slate-950 ${
-        invalid ? "border-rose-300" : "border-slate-200"
+      className={`flex items-center gap-3 rounded-2xl border bg-canvas/60 px-4 py-3.5 shadow-inner shadow-black/30 transition-colors ${
+        invalid
+          ? "border-rose-500/60 focus-within:border-rose-400 focus-within:shadow-[0_0_0_3px_rgba(244,63,94,0.16)]"
+          : "border-gray-200 focus-within:border-amber-400 focus-within:shadow-[0_0_0_3px_rgba(251,191,36,0.14)]"
       }`}
     >
       <input
@@ -53,9 +55,9 @@ export function AmountField({
         }}
         aria-invalid={invalid}
         aria-describedby={describedBy}
-        className="min-w-0 flex-1 bg-transparent font-mono text-3xl font-semibold tracking-tight tabular-nums outline-none placeholder:text-slate-300"
+        className="min-w-0 flex-1 bg-transparent font-mono text-2xl font-bold tracking-tight tabular-nums text-fg outline-none placeholder:text-fg-muted"
       />
-      <span className="text-sm font-medium text-slate-400">{unit}</span>
+      <span className="shrink-0 rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-bold text-fg-secondary">{unit}</span>
     </div>
   );
 }

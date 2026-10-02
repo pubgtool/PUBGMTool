@@ -32,7 +32,7 @@ export function EnvelopeSuccessDialog({ result, onClose }: Props) {
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild forceMount>
               <motion.div
-                className="fixed inset-0 z-[45] bg-slate-950/50 backdrop-blur-[2px]"
+                className="fixed inset-0 z-[45] bg-black/75 backdrop-blur-md"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -42,7 +42,7 @@ export function EnvelopeSuccessDialog({ result, onClose }: Props) {
             <div className="pointer-events-none fixed inset-0 z-[46] flex items-center justify-center px-6">
               <Dialog.Content asChild forceMount>
                 <motion.div
-                  className="pointer-events-auto w-full max-w-xs overflow-hidden rounded-[28px] bg-white text-center shadow-2xl outline-none"
+                  className="pointer-events-auto relative w-full max-w-xs overflow-hidden rounded-[28px] border border-slate-100 bg-white text-center shadow-card outline-none"
                   initial={{ opacity: 0, scale: 0.86, y: 24 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.92, y: 12 }}
@@ -79,38 +79,43 @@ function Body({ result, onClose }: { result: EnvelopeResult; onClose: () => void
 
   return (
     <>
-      <div className="bg-gradient-to-br from-amber-400 via-amber-500 to-red-500 px-6 pb-7 pt-8 text-white">
+      <div className="relative overflow-hidden bg-gradient-to-br from-red-900 via-red-800 to-amber-700 px-6 pb-7 pt-8">
+        <span aria-hidden className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-amber-300/20 blur-xl" />
+        <span aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-amber-300/70 to-transparent" />
         <motion.span
           initial={{ scale: 0.4, rotate: -20 }}
           animate={{ scale: 1, rotate: 0 }}
           transition={{ ...SPRING, delay: 0.1 }}
-          className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white/20"
+          className="relative mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-b from-amber-200 to-amber-500 text-red-900 shadow-lg"
         >
           <Gift className="h-7 w-7" aria-hidden />
         </motion.span>
-        <Dialog.Title className="mt-3 text-lg font-semibold tracking-tight">Red Envelope Opened</Dialog.Title>
-        <p className="mt-1 font-mono text-xs tracking-wider text-white/80">{result.code}</p>
+        <Dialog.Title className="relative mt-3 text-lg font-extrabold tracking-tight text-white">Red Envelope Opened</Dialog.Title>
+        <p className="relative mt-1 font-mono text-xs font-semibold tracking-wider text-amber-100">{result.code}</p>
       </div>
 
       <div className="px-6 pb-6 pt-5">
-        <p className="text-xs font-medium uppercase tracking-wider text-slate-400">You received</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">You received</p>
         <p className="mt-1 flex items-baseline justify-center gap-1.5">
-          <span data-testid="envelope-amount" className="font-mono text-4xl font-semibold tabular-nums tracking-tight">
+          <span
+            data-testid="envelope-amount"
+            className="font-mono text-4xl font-extrabold tabular-nums tracking-tight text-amber-700 drop-shadow-[0_0_14px_rgba(251,191,36,0.35)]"
+          >
             +{formatAmount(shown)}
           </span>
-          <span className="text-sm font-medium text-slate-400">USDT</span>
+          <span className="text-sm font-bold text-fg-secondary">USDT</span>
         </p>
-        <Dialog.Description className="mt-2 text-xs text-slate-500">
-          Credited to your available balance.
-        </Dialog.Description>
-        <button
+        <Dialog.Description className="mt-2 text-xs text-fg-secondary">Credited to your available balance.</Dialog.Description>
+        <motion.button
           type="button"
           autoFocus
+          whileTap={{ scale: 0.95 }}
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
           onClick={onClose}
-          className="mt-5 w-full rounded-2xl bg-slate-950 py-3 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+          className="btn-primary mt-5 w-full rounded-2xl py-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
         >
           Collect
-        </button>
+        </motion.button>
       </div>
     </>
   );

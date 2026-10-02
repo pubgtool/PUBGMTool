@@ -114,7 +114,7 @@ export function buildDemoAccount(now: number): AccountSnapshot {
     },
     payoutAddress: DEMO_PAYOUT,
     createdAt: iso(openedAt - 2 * MS_PER_DAY),
-    security: { twoFactor: true, paymentPin: true, pushAlerts: true },
+    security: { twoFactor: false, paymentPin: false, pushAlerts: true },
     referral: { invites: 2, commissionEarned: sum("commission") },
     rewards: {
       checkIn: { streak: 3, lastDay: utcDay(now - MS_PER_DAY), cycles: 0 },

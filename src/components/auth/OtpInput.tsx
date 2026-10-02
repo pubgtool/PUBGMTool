@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import { AUTH } from "@/config/protocol";
+import { useT } from "@/lib/i18n";
 
 interface Props {
   value: string;
@@ -16,6 +17,7 @@ interface Props {
  * pasted or autofilled code fills the whole row.
  */
 export function OtpInput({ value, onChange, invalid = false, disabled = false, length = AUTH.otp.length }: Props) {
+  const { t } = useT();
   const refs = useRef<Array<HTMLInputElement | null>>([]);
   const focus = (index: number) => refs.current[Math.max(0, Math.min(length - 1, index))]?.focus();
 
@@ -33,7 +35,7 @@ export function OtpInput({ value, onChange, invalid = false, disabled = false, l
   };
 
   return (
-    <div role="group" aria-label={`${length}-digit verification code`} data-testid="otp-input" className="flex justify-between gap-2">
+    <div role="group" aria-label={t("auth.otp.group", { n: length })} data-testid="otp-input" className="flex justify-between gap-2">
       {Array.from({ length }, (_, i) => (
         <input
           key={i}
@@ -44,7 +46,7 @@ export function OtpInput({ value, onChange, invalid = false, disabled = false, l
           inputMode="numeric"
           pattern="[0-9]*"
           autoComplete={i === 0 ? "one-time-code" : "off"}
-          aria-label={`Digit ${i + 1} of ${length}`}
+          aria-label={t("auth.otp.digit", { i: i + 1, n: length })}
           aria-invalid={invalid}
           disabled={disabled}
           value={value[i] ?? ""}
@@ -72,8 +74,10 @@ export function OtpInput({ value, onChange, invalid = false, disabled = false, l
             event.preventDefault();
             write(i, event.clipboardData.getData("text"));
           }}
-          className={`h-14 w-full min-w-0 rounded-2xl border bg-white text-center font-mono text-2xl font-semibold tabular-nums outline-none transition-colors focus:border-slate-950 focus:ring-2 focus:ring-slate-950/10 disabled:opacity-50 ${
-            invalid ? "border-rose-300" : value[i] ? "border-slate-400" : "border-slate-200"
+          className={`h-14 w-full min-w-0 rounded-xl border bg-white text-center font-mono text-2xl font-bold tabular-nums text-gray-900 outline-none transition-colors disabled:opacity-50 ${
+            invalid
+              ? "border-red-500 bg-red-50/20 focus:ring-1 focus:ring-red-500"
+              : `focus:border-black focus:ring-1 focus:ring-black ${value[i] ? "border-gray-400" : "border-gray-200"}`
           }`}
         />
       ))}

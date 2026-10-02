@@ -8,7 +8,7 @@ import { formatAmount } from "@/lib/format";
 import { formatCountdown } from "@/lib/time";
 import type { CheckInView } from "@/lib/rewards";
 
-const TAP = { scale: 0.97 } as const;
+const TAP = { scale: 0.95 } as const;
 const SPRING = { type: "spring", stiffness: 500, damping: 30 } as const;
 
 interface Props {
@@ -26,12 +26,15 @@ export function CheckInGrid({ view, guest, resetInMs, burstKey, popDay, onCheckI
   const days = Array.from({ length: CHECK_IN_CYCLE }, (_, i) => i + 1);
 
   return (
-    <section aria-label="Daily node check-in" className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
-      <h2 className="flex items-center gap-2 text-sm font-semibold">
-        <CalendarCheck className="h-4 w-4 text-slate-400" aria-hidden />
+    <section
+      aria-label="Daily node check-in"
+      className="rounded-2xl border border-gray-200 bg-white p-5 shadow-card"
+    >
+      <h2 className="flex items-center gap-2 text-sm font-bold tracking-tight">
+        <CalendarCheck className="h-4 w-4 text-amber-700" aria-hidden />
         Daily Node Check-In
       </h2>
-      <p className="mt-1 text-xs text-slate-500">
+      <p className="mt-1 text-xs text-fg-secondary">
         Check in every UTC day to build a 7-day yield streak. Missing a day restarts it.
       </p>
 
@@ -44,12 +47,12 @@ export function CheckInGrid({ view, guest, resetInMs, burstKey, popDay, onCheckI
           const state = claimed ? "claimed" : current ? "current" : "upcoming";
 
           const tone = claimed
-            ? "border-slate-950 bg-slate-950 text-white"
+            ? "border-emerald-400/40 bg-gradient-to-b from-emerald-500/20 to-emerald-500/[0.04] text-emerald-800"
             : current
-              ? "border-amber-400 bg-amber-50 text-slate-900 ring-2 ring-amber-300/60"
+              ? "border-amber-400 bg-gradient-to-b from-amber-400/25 to-amber-500/[0.06] text-amber-900"
               : milestone
-                ? "border-amber-200 bg-gradient-to-br from-amber-50 to-orange-50 text-slate-500"
-                : "border-slate-100 bg-slate-50 text-slate-400";
+                ? "border-slate-100 bg-gradient-to-br from-amber-500/10 to-orange-500/[0.04] text-fg-secondary"
+                : "border-gray-200 bg-gray-50 text-fg-muted";
 
           return (
             <motion.li
@@ -62,16 +65,16 @@ export function CheckInGrid({ view, guest, resetInMs, burstKey, popDay, onCheckI
                 milestone ? "col-span-2" : ""
               }`}
             >
-              {claimed && <Check className="absolute right-1 top-1 h-3 w-3 opacity-80" aria-label="claimed" />}
-              <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wider opacity-80">
-                Day {day}
-              </span>
-              <span className="mt-1 flex items-center gap-1 font-mono text-sm font-semibold tabular-nums">
-                {milestone && <Gift className={`h-3.5 w-3.5 ${claimed ? "text-amber-300" : "text-amber-500"}`} aria-hidden />}
-                +{formatAmount(reward)}
+              {current && (
+                <span aria-hidden className="pointer-events-none absolute inset-0 rounded-2xl motion-safe:animate-glow-pulse" />
+              )}
+              {claimed && <Check className="absolute right-1.5 top-1.5 h-3.5 w-3.5 text-emerald-700" aria-label="claimed" />}
+              <span className="relative whitespace-nowrap text-[11px] font-semibold uppercase tracking-wider opacity-80">Day {day}</span>
+              <span className="relative mt-1 flex items-center gap-1 font-mono text-sm font-bold tabular-nums">
+                {milestone && <Gift className={`h-3.5 w-3.5 ${claimed ? "text-emerald-700" : "text-amber-700"}`} aria-hidden />}+{formatAmount(reward)}
               </span>
               {milestone && (
-                <span className={`mt-0.5 text-[10px] font-medium ${claimed ? "text-amber-200" : "text-amber-600"}`}>
+                <span className={`relative mt-0.5 text-[11px] font-semibold ${claimed ? "text-emerald-700" : "text-amber-700"}`}>
                   + Mystery Node Bonus
                 </span>
               )}
@@ -87,7 +90,9 @@ export function CheckInGrid({ view, guest, resetInMs, burstKey, popDay, onCheckI
           transition={SPRING}
           onClick={onCheckIn}
           disabled={view.doneToday}
-          className="w-full rounded-2xl bg-slate-950 py-3.5 text-sm font-semibold text-white outline-none transition-colors hover:bg-slate-900 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:bg-slate-200 disabled:text-slate-500"
+          className={`w-full rounded-2xl py-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2 ${
+            view.doneToday ? "border border-emerald-500/30 bg-emerald-500/10 font-bold text-emerald-700" : "btn-primary"
+          }`}
         >
           {guest ? (
             "Sign in to check in"

@@ -26,6 +26,25 @@ export function useNow(intervalMs: number | null): number {
 }
 
 /**
+ * Like useNow, but null until mounted. The server cannot know the visitor's clock, so text that
+ * changes every second must stay out of the first render or hydration fails.
+ */
+export function useLiveNow(intervalMs: number): number | null {
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const id = setInterval(tick, intervalMs);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [intervalMs]);
+  return now;
+}
+
+/**
  * Returns a guard for guest-locked actions: true when signed in, otherwise it
  * opens the auth modal (with `reason` shown) and returns false.
  */

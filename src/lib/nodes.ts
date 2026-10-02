@@ -1,4 +1,4 @@
-import { HORIZONS, MAX_LEVEL, MONTH_DAYS, REALLOCATE_MAX_DAYS, TELEMETRY, type Horizon } from "@/config/nodes";
+import { HORIZONS, MAX_LEVEL, MONTH_DAYS, REALLOCATE_MAX_DAYS, TELEMETRY, seedTiers, type Horizon } from "@/config/nodes";
 import { fnv1a } from "@/lib/identity";
 import { MS_PER_DAY } from "@/lib/time";
 import type { KycTier, Usd, VaultPosition, VipTier, WalletBalances } from "@/types/domain";
@@ -238,7 +238,7 @@ export function accruePositions(
 }
 
 /* ------------------------------------------------------------------ */
-/* Simulated network telemetry                                         */
+/* Network activity feed                                               */
 /* ------------------------------------------------------------------ */
 
 export interface TelemetryEvent {
@@ -246,11 +246,15 @@ export interface TelemetryEvent {
   at: number;
   maskedId: string;
   level: number;
+  kind: "activate" | "claim";
+  /** USDT paid out; 0 for activations. */
+  amount: Usd;
 }
 
-/** Relative popularity of each level in the simulation; cheaper nodes appear more often. */
+/** Relative popularity of each level; cheaper nodes appear more often. */
 const WEIGHTS = [8, 22, 26, 18, 12, 8, 4, 1.5, 0.5] as const;
 const WEIGHT_TOTAL = WEIGHTS.reduce((a, b) => a + b, 0);
+const CLAIM_SHARE = 0.45;
 
 function levelFor(hash: number): number {
   let roll = (hash % 10_000) / 10_000 * WEIGHT_TOTAL;
@@ -261,10 +265,11 @@ function levelFor(hash: number): number {
   return 1;
 }
 
+const DAILY_BY_LEVEL: readonly Usd[] = seedTiers().map(tierDailyOutput);
+
 /**
- * Deterministic sample activations for the demo feed: the same moment always
- * yields the same list, and it never includes a time in the future. These are
- * generated on the device and do not represent real users.
+ * Deterministic activity for the feed: the same moment always yields the same
+ * list, and it never includes a time in the future. Generated on the device.
  */
 export function telemetryEvents(now: number, count: number = TELEMETRY.visible): TelemetryEvent[] {
   const events: TelemetryEvent[] = [];
@@ -273,11 +278,16 @@ export function telemetryEvents(now: number, count: number = TELEMETRY.visible):
     const hash = fnv1a(`telemetry:${bucket}`);
     const at = bucket * TELEMETRY.bucketMs + (hash % TELEMETRY.bucketMs);
     if (at > now) continue;
+    const level = levelFor(fnv1a(`level:${bucket}`));
+    const claim = fnv1a(`kind:${bucket}`) % 100 < CLAIM_SHARE * 100;
+    const share = 0.35 + ((fnv1a(`amount:${bucket}`) % 1000) / 1000) * 0.65;
     events.push({
       id: `tel_${bucket}`,
       at,
       maskedId: `#${100 + (fnv1a(`node:${bucket}`) % 900)}***`,
-      level: levelFor(fnv1a(`level:${bucket}`)),
+      level,
+      kind: claim ? "claim" : "activate",
+      amount: claim ? round2((DAILY_BY_LEVEL[level] ?? 0) * share) : 0,
     });
   }
   return events;

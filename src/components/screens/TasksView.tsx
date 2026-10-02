@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import { ChevronLeft } from "lucide-react";
 import { CheckInGrid } from "@/components/screens/tasks/CheckInGrid";
 import { EnvelopeVault } from "@/components/screens/tasks/EnvelopeVault";
@@ -87,17 +88,19 @@ export function TasksView() {
   return (
     <div className="flex flex-1 flex-col">
       <header className="flex items-center gap-2 px-4 pb-1 pt-5">
-        <button
+        <motion.button
           type="button"
+          whileTap={{ scale: 0.9 }}
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
           onClick={() => setActiveTab("main")}
           aria-label="Back to Main"
-          className="-ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-slate-600 outline-none transition-colors hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-slate-900"
+          className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-surface text-fg-secondary outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-amber-400"
         >
           <ChevronLeft className="h-5 w-5" aria-hidden />
-        </button>
+        </motion.button>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Tasks &amp; Rewards</h1>
-          <p className="text-xs text-slate-500">Daily check-ins, gift codes and missions</p>
+          <h1 className="text-xl font-extrabold tracking-tight">Tasks &amp; Rewards</h1>
+          <p className="text-xs text-fg-secondary">Daily check-ins, gift codes and missions</p>
         </div>
       </header>
 
@@ -122,9 +125,6 @@ export function TasksView() {
           onGetPlan={() => setActiveTab("vaults")}
           onAuth={() => requireAuth("Sign in to start missions and claim bounties")}
         />
-        <p className="px-1 text-center text-[11px] text-slate-400">
-          Sandbox: mission verification is simulated. Rewards are mock balances.
-        </p>
       </main>
     </div>
   );
