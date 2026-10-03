@@ -59,7 +59,6 @@ class MainActivity : ComponentActivity() {
     private var ownAction: TextView? = null
     private var chatList: RecyclerView? = null
     private var inboxEmpty: View? = null
-    private var trustAction: TextView? = null
     private var timer: TextView? = null
     private var participantRows: LinearLayout? = null
     private var mute: FrameLayout? = null
@@ -150,6 +149,7 @@ class MainActivity : ComponentActivity() {
     private fun render(value: CallState) {
         val previous = state
         state = value
+        if (value.phase == Phase.INCOMING && previous.phase != Phase.INCOMING) { tab = "calls"; selectedPeer = ""; hideKeyboard() }
         val target = when {
             tab == "calls" && value.phase != Phase.IDLE -> "active"
             tab == "chat" && selectedPeer.isNotEmpty() -> "conversation"
@@ -180,7 +180,7 @@ class MainActivity : ComponentActivity() {
 
     private fun rebuild(target: String, animate: Boolean) {
         loadJob?.cancel(); content.animate().cancel(); content.removeAllViews()
-        ownNumber = null; ownAction = null; chatList = null; inboxEmpty = null; trustAction = null
+        ownNumber = null; ownAction = null; chatList = null; inboxEmpty = null
         timer = null; participantRows = null; mute = null; speaker = null
         screen = target
         back.isEnabled = target == "conversation"
@@ -196,7 +196,7 @@ class MainActivity : ComponentActivity() {
             header.addView(iconButton("back", "Назад") { selectedPeer = ""; safetyCode = ""; hideKeyboard(); rebuild("inbox", true) }, size(48))
             val labels = column().apply { setPadding(dp(8), 0, 0, 0) }
             labels.addView(text(contactName(selectedPeer), 18, Typeface.BOLD))
-            connection = text(if (peerVerified) "Контакт подтверждён" else "Номер Line", 11, color = GRAY).apply { setPadding(0, dp(4), 0, 0) }
+            connection = text(formatNumber(selectedPeer), 11, color = GRAY).apply { setPadding(0, dp(4), 0, 0) }
             labels.addView(connection)
             header.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
             header.addView(iconButton("phone", "Позвонить контакту") { dial = selectedPeer; requestCall("dial") }, size(48))
@@ -326,11 +326,6 @@ class MainActivity : ComponentActivity() {
         val layout = column().apply { setBackgroundColor(WHITE) }
         content.addView(layout, FrameLayout.LayoutParams(-1, -1))
         layout.addView(divider())
-        trustAction = text("Подтвердить контакт", 12, Typeface.BOLD, INK).apply {
-            gravity = Gravity.CENTER; background = ripple(BACKGROUND, 0); minimumHeight = dp(42)
-            contentDescription = "Подтвердить контакт"; setOnClickListener { showSafety() }
-        }
-        layout.addView(trustAction)
         chatList = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@MainActivity).apply { stackFromEnd = true }
             adapter = messageAdapter; itemAnimator = null; setHasFixedSize(true)
@@ -366,8 +361,7 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshTrust() {
         if (screen != "conversation") return
-        trustAction?.visibility = if (peerVerified) View.GONE else View.VISIBLE
-        connection.text = if (peerVerified) "Контакт подтверждён" else "Номер Line"
+        connection.text = formatNumber(selectedPeer)
     }
 
     private fun loadHistory(older: Boolean = false) {
@@ -378,6 +372,7 @@ class MainActivity : ComponentActivity() {
         if (older && cursor == null) return
         val manager = chatList?.layoutManager as? LinearLayoutManager
         val anchor = manager?.findFirstVisibleItemPosition() ?: 0
+        val anchorId = history.getOrNull(anchor)?.id
         val offset = manager?.findViewByPosition(anchor)?.top ?: 0
         val wasAtBottom = history.isEmpty() || manager?.findLastVisibleItemPosition() == history.lastIndex
         loadJob?.cancel()
@@ -387,9 +382,14 @@ class MainActivity : ComponentActivity() {
                 if (screen != "conversation" || peer != selectedPeer) return@launch
                 val oldSize = history.size
                 olderAvailable = page.size == 40
-                history = if (older) (page + history).distinctBy { it.id }.take(200) else page
+                history = when {
+                    older -> (page + history).distinctBy { it.id }.take(200)
+                    !wasAtBottom && history.isNotEmpty() -> (history + page).associateBy { it.id }.values.sortedBy { it.sequence }.takeLast(200)
+                    else -> page
+                }
                 messageAdapter.submitList(history) {
                     if (older) manager?.scrollToPositionWithOffset(anchor + (history.size - oldSize).coerceAtLeast(0), offset)
+                    else if (!wasAtBottom && anchorId != null) manager?.scrollToPositionWithOffset(history.indexOfFirst { it.id == anchorId }.coerceAtLeast(0), offset)
                     else if (wasAtBottom && history.isNotEmpty()) chatList?.scrollToPosition(history.lastIndex)
                 }
             } catch (_: CancellationException) { }
@@ -629,6 +629,8 @@ class MainActivity : ComponentActivity() {
         override fun areContentsTheSame(a: ChatMessage, b: ChatMessage) = a == b
     }) {
         private val time = SimpleDateFormat("HH:mm", Locale.getDefault())
+        private val day = SimpleDateFormat("d MMMM yyyy", Locale("ru"))
+        private val dayLabel = SimpleDateFormat("d MMMM", Locale("ru"))
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MessageHolder {
             val outer = column().apply { layoutParams = RecyclerView.LayoutParams(-1, -2) }
             val date = text("", 10, color = GRAY).apply { gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(14)) }
@@ -642,11 +644,10 @@ class MainActivity : ComponentActivity() {
         override fun onBindViewHolder(holder: MessageHolder, position: Int) {
             val item = getItem(position)
             val previous = if (position > 0) getItem(position - 1) else null
-            val day = SimpleDateFormat("d MMMM", Locale("ru"))
             val sameDay = previous != null && day.format(Date(previous.createdAt)) == day.format(Date(item.createdAt))
             val grouped = previous?.outgoing == item.outgoing && sameDay
             holder.date.visibility = if (sameDay) View.GONE else View.VISIBLE
-            holder.date.text = day.format(Date(item.createdAt))
+            holder.date.text = dayLabel.format(Date(item.createdAt))
             holder.line.gravity = if (item.outgoing) Gravity.END else Gravity.START
             holder.line.setPadding(0, dp(if (grouped) 2 else 7), 0, dp(2))
             holder.message.maxWidth = (resources.displayMetrics.widthPixels * 0.7f).toInt() - dp(32)

@@ -28,6 +28,7 @@ class UiFlowTest {
                 assertEquals("12", descendants(root).filterIsInstance<EditText>().first().text.toString())
                 find(root, "Удалить цифру").performClick()
                 assertEquals("1", descendants(root).filterIsInstance<EditText>().first().text.toString())
+                descendants(root).filterIsInstance<EditText>().first().setText("")
                 find(root, "Сообщения").performClick()
                 assertTrue(descendants(root).any { it.contentDescription?.toString() == "Новое сообщение" })
                 find(root, "Профиль").performClick()
@@ -67,6 +68,7 @@ class UiFlowTest {
                 assertTrue(find(root, "Отправить сообщение").isShown)
                 assertTrue(find(root, "Назад").isShown)
                 assertFalse(labels(root).any { it == "Посмотреть код безопасности" })
+                assertFalse(labels(root).any { it == "Подтвердить контакт" })
             }
             screenshot("conversation-test-data")
             instrumentation.runOnMainSync { find(activity.window.decorView, "Назад").performClick() }
