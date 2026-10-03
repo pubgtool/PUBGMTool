@@ -7,6 +7,8 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.TextView
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiSelector
 import app.line.crypto.SecureStore
 import org.junit.Assert.*
 import org.junit.Test
@@ -34,6 +36,7 @@ class UiFlowTest {
                 find(root, "Профиль").performClick()
                 assertTrue(labels(root).contains("Мой аккаунт"))
                 assertFalse(labels(root).any { it.contains("wss://") || it.contains("TLS") || it.contains("сертификат") })
+                assertFalse(descendants(root).any { it.contentDescription?.toString() == "Для администратора" })
                 find(root, "Звонки").performClick()
             }
             screenshot("calls")
@@ -71,6 +74,15 @@ class UiFlowTest {
                 assertFalse(labels(root).any { it == "Подтвердить контакт" })
             }
             screenshot("conversation-test-data")
+            val device = UiDevice.getInstance(instrumentation)
+            device.findObject(UiSelector().text("Отлично. Наберу в 19:00.")).longClick()
+            assertTrue(device.findObject(UiSelector().text("Удалить на этом устройстве")).waitForExists(5000))
+            device.findObject(UiSelector().text("Удалить на этом устройстве")).click()
+            assertTrue(device.findObject(UiSelector().text("Удалить сообщение?")).waitForExists(5000))
+            screenshot("delete-message-confirmation-test-data")
+            device.findObject(UiSelector().resourceId("android:id/button1")).click()
+            await { !labels(activity.window.decorView).contains("Отлично. Наберу в 19:00.") }
+            SecureStore(context).use { assertFalse(it.messages(maria).any { item -> item.id == "ui-maria-3" }) }
             instrumentation.runOnMainSync { find(activity.window.decorView, "Назад").performClick() }
             await { descendants(activity.window.decorView).any { it.contentDescription?.toString() == "Профиль" && it.isShown } }
             instrumentation.runOnMainSync { find(activity.window.decorView, "Профиль").performClick() }

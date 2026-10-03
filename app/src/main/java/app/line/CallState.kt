@@ -16,6 +16,9 @@ data class CallState(
     val chatVersion: Long = 0,
     val configReady: Boolean = false,
     val mediaReady: Boolean = false,
+    val callsEnabled: Boolean = true,
+    val chatEnabled: Boolean = true,
+    val maxParticipants: Int = 8,
     val highQuality: Boolean = true,
     val message: String = "Укажите сервер, чтобы получить номер"
 )

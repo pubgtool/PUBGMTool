@@ -23,6 +23,8 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import app.line.crypto.ChatMessage
+import app.line.admin.AdminPanel
+import app.line.admin.TripleTapGate
 import app.line.ui.LineIcon
 import app.line.ui.Motion
 import app.line.ui.RefreshPolicy
@@ -65,6 +67,9 @@ class MainActivity : ComponentActivity() {
     private var speaker: FrameLayout? = null
     private val messageAdapter = MessageAdapter()
     private val inboxAdapter = InboxAdapter()
+    private val adminTap = TripleTapGate()
+    private var adminPanel: AdminPanel? = null
+    private var adminLoginDialog: AlertDialog? = null
     private val main = Handler(Looper.getMainLooper())
     private val observer: (CallState) -> Unit = { render(it) }
     private val back = object : OnBackPressedCallback(false) {
@@ -137,6 +142,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); RefreshPolicy.apply(this, root); if (state.connectedAt > 0) main.post(tick) }
     override fun onPause() { main.removeCallbacks(tick); RefreshPolicy.clear(this); super.onPause() }
     override fun onStop() {
+        adminLoginDialog?.dismiss(); adminLoginDialog = null
+        adminPanel?.dismiss(); adminPanel = null; service?.lockAdmin(); adminTap.reset()
         service?.removeObserver(observer); if (bound) unbindService(binding)
         bound = false; service = null; loadJob?.cancel(); super.onStop()
     }
@@ -227,7 +234,11 @@ class MainActivity : ComponentActivity() {
                 }
                 addView(iconBox, LinearLayout.LayoutParams(dp(46), dp(34)))
                 addView(text(title, 10, if (tab == id) Typeface.BOLD else Typeface.NORMAL, if (tab == id) INK else GRAY).apply { setPadding(0, dp(6), 0, 0) })
-                contentDescription = title; setOnClickListener { navigate(id) }; Motion.press(this)
+                contentDescription = title; setOnClickListener {
+                    navigate(id)
+                    if (id == "profile" && adminTap.tap(SystemClock.elapsedRealtime())) showAdminLogin()
+                    else if (id != "profile") adminTap.reset()
+                }; Motion.press(this)
             }
             navigation.addView(item, LinearLayout.LayoutParams(0, dp(60), 1f))
         }
@@ -346,6 +357,7 @@ class MainActivity : ComponentActivity() {
         }
         composerArea.addView(input, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(10) })
         val send = iconButton("send", "Отправить сообщение", INK, WHITE) {
+            if (!state.chatEnabled) { info("Сообщения отключены", "Администратор сервиса временно отключил сообщения."); return@iconButton }
             val draft = input.text.toString()
             if (draft.isBlank()) return@iconButton
             if (!peerVerified) { showSafety(); return@iconButton }
@@ -435,8 +447,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun contactDetails() {
-        AlertDialog.Builder(this).setTitle(contactName(selectedPeer)).setItems(arrayOf("Проверить код безопасности", "Изменить имя")) { _, which ->
-            if (which == 0) showSafety() else {
+        AlertDialog.Builder(this).setTitle(contactName(selectedPeer)).setItems(arrayOf("Проверить код безопасности", "Изменить имя", "Очистить переписку на этом устройстве")) { _, which ->
+            if (which == 0) showSafety() else if (which == 2) {
+                val peer = selectedPeer
+                AlertDialog.Builder(this).setTitle("Удалить локальную историю?")
+                    .setMessage("Копия у собеседника останется. Доверие и ключи контакта не сбрасываются.")
+                    .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> action {
+                        service?.clearConversation(peer) ?: error("Сервис не готов")
+                        if (selectedPeer == peer) { history = emptyList(); messageAdapter.submitList(emptyList()); loadHistory() }
+                    } }.show()
+            } else {
                 val input = entry("Имя").apply { setText(prefs.getString("contact-$selectedPeer", "")) }
                 val box = column().apply { setPadding(dp(24), dp(12), dp(24), 0); addView(input) }
                 AlertDialog.Builder(this).setTitle("Имя контакта").setView(box).setNegativeButton("Отмена", null)
@@ -482,10 +502,44 @@ class MainActivity : ComponentActivity() {
             info("Line 0.4", "Звонки и сообщения. Содержимое защищено на устройствах; сервис и сеть могут видеть участников и время соединений. Новые входящие доступны при открытом приложении.")
         })
         body.addView(settings)
-        body.addView(text("Для администратора", 12, color = GRAY).apply {
-            gravity = Gravity.CENTER; minimumHeight = dp(56); background = ripple(BACKGROUND, 16)
-            setOnClickListener { showManualSettings() }; contentDescription = "Для администратора"
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+    }
+
+    private fun showAdminLogin() {
+        val s = service ?: return
+        if (!state.online) { info("Сначала подключите Line", "Админ-код проверяется сервером. Получите код подключения сервиса и подключитесь в профиле."); return }
+        if (s.isAdmin()) { showAdminPanel(s); return }
+        val box = column().apply { setPadding(dp(24), dp(10), dp(24), dp(8)) }
+        val code = entry("Секретный код").apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            filters = arrayOf(InputFilter.LengthFilter(128)); importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        }
+        box.addView(code)
+        val dialog = AlertDialog.Builder(this).setTitle("Вход администратора").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Войти", null).create()
+        adminLoginDialog = dialog
+        dialog.setOnDismissListener { code.setText("") }
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            if (code.text.length < 12) { code.error = "Не менее 12 символов"; return@setOnClickListener }
+            val secret = code.text.toString()
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+            ui.launch {
+                try {
+                    s.adminLogin(secret)
+                    if (!dialog.isShowing) { s.lockAdmin(); return@launch }
+                    code.setText(""); dialog.dismiss(); adminLoginDialog = null; hideKeyboard(); showAdminPanel(s)
+                } catch (error: Exception) {
+                    if (dialog.isShowing) {
+                        code.error = error.message ?: "Не удалось войти"
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                    }
+                }
+            }
+        } }; dialog.show()
+    }
+
+    private fun showAdminPanel(s: CallService) {
+        if (!s.isAdmin()) return
+        adminPanel?.dismiss()
+        if (s.isAdmin()) adminPanel = AdminPanel(this, ui, s) { showManualSettings() }.also { it.show() }
     }
 
     private fun callScreen() {
@@ -552,6 +606,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showManualSettings() {
+        if (service?.isAdmin() != true) return
         if (state.phase != Phase.IDLE) { toast("Сначала завершите звонок"); return }
         val box = column().apply { setPadding(dp(24), dp(10), dp(24), dp(12)) }
         val old = service?.config()
@@ -567,6 +622,7 @@ class MainActivity : ComponentActivity() {
             .setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             try {
+                check(service?.isAdmin() == true) { "Админ-сессия истекла" }
                 val profile = EndpointConfig(api.text.toString().trim(), apiPins.text.toString().trim(), media.text.toString().trim(), mediaPins.text.toString().trim())
                 profile.validate(); service?.configure(profile, state.highQuality) ?: error("Сервис пока не готов"); dialog.dismiss(); hideKeyboard()
             } catch (error: Exception) { api.error = error.message ?: "Проверьте настройки" }
@@ -574,6 +630,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestCall(action: String) {
+        if (!state.callsEnabled) { info("Звонки отключены", "Администратор сервиса временно отключил звонки."); return }
         if (!state.configReady) { showConnect(); return }
         if (service == null || !state.online || !state.mediaReady) { info("Звонок недоступен", "Проверьте подключение. Сервис звонков должен быть настроен администратором."); return }
         val members = parseMembers(dial)
@@ -653,12 +710,24 @@ class MainActivity : ComponentActivity() {
             holder.message.maxWidth = (resources.displayMetrics.widthPixels * 0.7f).toInt() - dp(32)
             holder.bubble.background = shape(if (item.outgoing) INK else BUBBLE, 18)
             holder.message.setTextColor(if (item.outgoing) WHITE else INK); holder.message.text = item.text
+            holder.bubble.setOnLongClickListener { messageActions(item); true }
             holder.meta.setTextColor(if (item.outgoing) 0xFFB8B8B8.toInt() else GRAY)
             holder.meta.text = time.format(Date(item.createdAt)) + if (item.outgoing) when (item.status) { "sent" -> "  ✓"; "failed" -> "  !"; else -> "  ·" } else ""
             holder.meta.contentDescription = if (item.outgoing) when (item.status) { "sent" -> "Отправлено"; "failed" -> "Не отправлено"; else -> "Отправляется" } else "Время сообщения"
         }
     }
     private class MessageHolder(view: View, val date: TextView, val line: LinearLayout, val bubble: LinearLayout, val message: TextView, val meta: TextView) : RecyclerView.ViewHolder(view)
+
+    private fun messageActions(message: ChatMessage) {
+        AlertDialog.Builder(this).setTitle("Сообщение").setItems(arrayOf("Копировать", "Удалить на этом устройстве")) { _, which ->
+            if (which == 0) getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Сообщение", message.text))
+            else AlertDialog.Builder(this).setTitle("Удалить сообщение?").setMessage("Оно исчезнет из вашей истории. Копия собеседника останется.")
+                .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> action {
+                    service?.deleteMessage(message.id) ?: error("Сервис не готов")
+                    history = history.filterNot { it.id == message.id }; messageAdapter.submitList(history)
+                } }.show()
+        }.show()
+    }
 
     private fun scrollBody(): LinearLayout {
         val body = column().apply { setPadding(dp(24), 0, dp(24), dp(24)) }

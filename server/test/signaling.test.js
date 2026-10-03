@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, scryptSync } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
 import { TokenVerifier } from 'livekit-server-sdk';
 import { WebSocket } from 'ws';
@@ -17,6 +19,14 @@ const LIVEKIT_ENV = {
 const token = (digit) => digit.repeat(64);
 const uuid = (id) => `550e8400-e29b-41d4-a716-${String(id).padStart(12, '0')}`;
 const base64 = (value) => Buffer.from(value).toString('base64');
+const ADMIN_CODE = 'correct-horse-battery-staple';
+let adminRequestNumber = 20_000;
+const nextAdminRequestId = () => uuid(adminRequestNumber++);
+
+function adminEnv(code = ADMIN_CODE) {
+  const salt = Buffer.from('admin-test-salt-1');
+  return { ADMIN_PASSWORD_HASH: `scrypt$${salt.toString('base64')}$${scryptSync(code, salt, 64).toString('base64')}` };
+}
 
 function bundle(seed, preKeyCount = 2) {
   return {
@@ -94,6 +104,18 @@ async function sendRequest(socket, message, predicate) {
   return result;
 }
 
+async function adminLogin(socket, code = ADMIN_CODE) {
+  const requestId = nextAdminRequestId();
+  return sendRequest(socket, { type: 'admin_login', requestId, code },
+    (message) => message.type === 'admin_result' && message.requestId === requestId);
+}
+
+async function adminAction(socket, action, fields = {}) {
+  const requestId = nextAdminRequestId();
+  return sendRequest(socket, { type: 'admin', requestId, action, ...fields },
+    (message) => message.type === 'admin_result' && message.requestId === requestId);
+}
+
 async function closeSocket(socket) {
   if (socket.readyState === WebSocket.CLOSED) return;
   const closed = new Promise((resolve) => socket.once('close', resolve));
@@ -134,7 +156,10 @@ test('registration stores only token hashes and public bundles in an atomic 0600
   const address = await resource.server.listen(0, '127.0.0.1');
   resource.url = `ws://127.0.0.1:${address.port}/signal`;
   const reconnect = await openSocket(resource);
-  assert.deepEqual(await register(reconnect, token('a'), bundle(11)), { type: 'registered', number: registered.number, mediaReady: false });
+  assert.deepEqual(await register(reconnect, token('a'), bundle(11)), {
+    type: 'registered', number: registered.number, mediaReady: false,
+    callsEnabled: true, chatEnabled: true, registrationEnabled: true, maxParticipants: 8,
+  });
 });
 
 test('version-1 registrations migrate on bundle registration without changing numbers', async () => {
@@ -148,7 +173,10 @@ test('version-1 registrations migrate on bundle registration without changing nu
   const resource = { server, directory, url: `ws://127.0.0.1:${address.port}/signal`, sockets: [] };
   resources.push(resource);
   const socket = await openSocket(resource);
-  assert.deepEqual(await register(socket, oldToken, bundle(12)), { type: 'registered', number: '01234567', mediaReady: false });
+  assert.deepEqual(await register(socket, oldToken, bundle(12)), {
+    type: 'registered', number: '01234567', mediaReady: false,
+    callsEnabled: true, chatEnabled: true, registrationEnabled: true, maxParticipants: 8,
+  });
   const migrated = JSON.parse(await readFile(dataFile, 'utf8'));
   assert.equal(migrated.version, 2);
   assert.equal(migrated.identities[hash].number, '01234567');
@@ -347,4 +375,245 @@ test('registration deadline and per-IP registration limits are enforced', async 
   assert.equal((await register(first, token('a'), bundle(29, 0))).type, 'registered');
   const second = await openSocket(resource);
   assert.equal((await register(second, token('b'), bundle(30, 0))).code, 'rate_limited');
+});
+
+test('admin hash helper emits only a usable scrypt verifier and enforces password length', () => {
+  const helper = fileURLToPath(new URL('../scripts/hash-admin-password.mjs', import.meta.url));
+  const output = execFileSync(process.execPath, [helper], {
+    input: `${ADMIN_CODE}\n`, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+  const match = /^scrypt\$([A-Za-z0-9+/]+={0,2})\$([A-Za-z0-9+/]+={0,2})$/.exec(output);
+  assert.ok(match);
+  assert.deepEqual(scryptSync(ADMIN_CODE, Buffer.from(match[1], 'base64'), 64), Buffer.from(match[2], 'base64'));
+  assert.equal(output.includes(ADMIN_CODE), false);
+  assert.throws(() => execFileSync(process.execPath, [helper], {
+    input: 'short\n', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+  }));
+});
+
+test('admin login is hash-verified, scoped to one socket, expires, and exposes privacy-safe status', async () => {
+  const resource = await setup({ env: adminEnv(), adminSessionMs: 500 });
+  const socket = await openSocket(resource);
+  assert.equal((await adminLogin(socket)).error, 'registration_required');
+  await register(socket, token('0'), bundle(30, 0));
+  const rejected = await adminAction(socket, 'status');
+  assert.deepEqual(rejected, {
+    type: 'admin_result', requestId: rejected.requestId, ok: false, error: 'unauthorized',
+  });
+
+  assert.equal((await adminLogin(socket, 'not-the-secret')).error, 'invalid_credentials');
+  const login = await adminLogin(socket);
+  assert.equal(login.ok, true);
+  assert.ok(login.expiresAt > Date.now());
+  const status = await adminAction(socket, 'status');
+  assert.equal(status.ok, true);
+  assert.deepEqual(status.result.settings, {
+    callsEnabled: true, chatEnabled: true, registrationEnabled: true, maxParticipants: 8,
+  });
+  assert.deepEqual(status.result.metrics, {
+    online: 1, registered: 1, activeCalls: 0, mediaConfigured: false,
+    uptimeSeconds: status.result.metrics.uptimeSeconds,
+  });
+  assert.ok(status.result.events.every((event) => Object.keys(event).sort().join(',') === 'at,event,outcome'));
+  assert.equal(JSON.stringify(status.result.events).includes(ADMIN_CODE), false);
+
+  const otherSocket = await openSocket(resource);
+  assert.equal((await adminAction(otherSocket, 'status')).error, 'unauthorized');
+  assert.equal((await adminAction(socket, 'logout')).result.loggedOut, true);
+  assert.equal((await adminAction(socket, 'status')).error, 'unauthorized');
+  assert.equal((await adminLogin(socket)).ok, true);
+  await closeSocket(socket);
+  assert.equal((await adminAction(otherSocket, 'status')).error, 'unauthorized');
+  const expiringSocket = await openSocket(resource);
+  await register(expiringSocket, token('1'), bundle(31, 0));
+  assert.equal((await adminLogin(expiringSocket)).ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  assert.equal((await adminAction(expiringSocket, 'status')).error, 'expired');
+});
+
+test('admin login failures are rate limited and lock out the peer until the lock expires', async () => {
+  const resource = await setup({ env: adminEnv(), adminLockMs: 80, adminRateWindowMs: 250 });
+  const socket = await openSocket(resource);
+  await register(socket, token('a'), bundle(38, 0));
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal((await adminLogin(socket, 'bad')).error, 'invalid_credentials');
+  }
+  assert.equal((await adminLogin(socket, ADMIN_CODE)).error, 'rate_limited');
+  await new Promise((resolve) => setTimeout(resolve, 280));
+  assert.equal((await adminLogin(socket)).ok, true);
+});
+
+test('a failed login still counts against the peer limit when its socket disconnects during scrypt', async () => {
+  let releaseDerivation;
+  let reportStarted;
+  let reportFinished;
+  const derivationGate = new Promise((resolve) => { releaseDerivation = resolve; });
+  const derivationStarted = new Promise((resolve) => { reportStarted = resolve; });
+  const derivationFinished = new Promise((resolve) => { reportFinished = resolve; });
+  const resource = await setup({
+    env: adminEnv(),
+    deriveAdminPassword: async (code, salt) => {
+      if (code === 'wrong-code-on-disconnect') {
+        reportStarted();
+        await derivationGate;
+        setImmediate(reportFinished);
+      }
+      return scryptSync(code, salt, 64);
+    },
+  });
+  const abandoned = await openSocket(resource);
+  await register(abandoned, token('b'), bundle(39, 0));
+  abandoned.send(JSON.stringify({ type: 'admin_login', requestId: uuid(30_001), code: 'wrong-code-on-disconnect' }));
+  await derivationStarted;
+  await closeSocket(abandoned);
+  releaseDerivation();
+  await derivationFinished;
+
+  const retry = await openSocket(resource);
+  await register(retry, token('c'), bundle(40, 0));
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    assert.equal((await adminLogin(retry, 'wrong-code-still-open')).error, 'invalid_credentials');
+  }
+  assert.equal((await adminLogin(retry)).error, 'rate_limited');
+});
+
+test('missing admin hash disables admin access without affecting ordinary registration', async () => {
+  const resource = await setup();
+  const socket = await openSocket(resource);
+  assert.equal((await adminLogin(socket)).error, 'registration_required');
+  assert.equal((await register(socket, token('a'), bundle(31, 0))).type, 'registered');
+  assert.equal((await adminLogin(socket)).error, 'admin_disabled');
+});
+
+test('invalid or stale admin stores fail startup closed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'signal-admin-store-'));
+  const dataFile = join(directory, 'identities.json');
+  const adminDataFile = join(directory, 'admin.json');
+  try {
+    await writeFile(adminDataFile, '{invalid json', { mode: 0o600 });
+    await assert.rejects(createSignalingServer({ dataFile, adminDataFile, env: {} }), /Admin store is not valid JSON/);
+    await writeFile(adminDataFile, JSON.stringify({
+      version: 1,
+      settings: { callsEnabled: true, chatEnabled: true, registrationEnabled: true, maxParticipants: 8 },
+      blockedNumbers: ['12345678'],
+    }), { mode: 0o600 });
+    await assert.rejects(createSignalingServer({ dataFile, adminDataFile, env: {} }), /unknown accounts/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('admin settings persist and enforce chat, call size, calls, and new-registration controls', async () => {
+  const resource = await setup({ env: adminEnv() });
+  const admin = await openSocket(resource);
+  const peerA = await openSocket(resource);
+  const peerB = await openSocket(resource);
+  const adminInfo = await register(admin, token('2'), bundle(32, 0));
+  const peerAInfo = await register(peerA, token('3'), bundle(33, 0));
+  const peerBInfo = await register(peerB, token('4'), bundle(34, 0));
+  assert.equal((await adminAction(peerA, 'status')).error, 'unauthorized');
+  assert.equal((await adminLogin(admin)).ok, true);
+
+  const capabilitiesChanged = waitFor(peerA, (message) => message.type === 'capabilities');
+  const update = await adminAction(admin, 'update_settings', {
+    settings: { chatEnabled: false, maxParticipants: 2 },
+  });
+  assert.deepEqual(update.result.settings, {
+    callsEnabled: true, chatEnabled: false, registrationEnabled: true, maxParticipants: 2,
+  });
+  const caps = await capabilitiesChanged;
+  assert.deepEqual(caps, {
+    type: 'capabilities', callsEnabled: true, chatEnabled: false,
+    registrationEnabled: true, maxParticipants: 2, mediaReady: false,
+  });
+  const body = base64('encrypted');
+  const disabledChat = await sendRequest(admin, {
+    type: 'envelope', to: peerAInfo.number, id: uuid(40), cipherType: 2, body,
+  }, (message) => message.type === 'error');
+  assert.equal(disabledChat.code, 'chat_disabled');
+  assert.equal((await sendRequest(admin, {
+    type: 'create_call', members: [peerAInfo.number, peerBInfo.number],
+  }, (message) => message.type === 'error')).code, 'invalid_message');
+
+  const disabled = await adminAction(admin, 'update_settings', {
+    settings: { callsEnabled: false, registrationEnabled: false },
+  });
+  assert.equal(disabled.ok, true);
+  assert.equal((await sendRequest(admin, { type: 'create_call', members: [peerAInfo.number] },
+    (message) => message.type === 'error')).code, 'calls_disabled');
+  const newcomer = await openSocket(resource);
+  assert.equal((await register(newcomer, token('5'), bundle(35, 0))).code, 'registration_disabled');
+  const existingLogin = await openSocket(resource);
+  assert.equal((await register(existingLogin, token('3'), bundle(33, 0))).type, 'registered');
+
+  const store = join(resource.directory, 'identities.json.admin.json');
+  assert.equal((await stat(store)).mode & 0o777, 0o600);
+  const adminData = JSON.parse(await readFile(store, 'utf8'));
+  assert.deepEqual(adminData.settings, disabled.result.settings);
+  assert.equal((await adminAction(admin, 'clear_events')).result.cleared, true);
+  const cleared = await adminAction(admin, 'status');
+  assert.deepEqual(cleared.result.events.map((event) => event.event), ['events_cleared']);
+  assert.equal((await adminAction(admin, 'update_settings', { settings: { arbitrary: true } })).error, 'invalid_message');
+  assert.equal((await adminAction(admin, 'update_settings', { settings: { maxParticipants: 9 } })).error, 'invalid_settings');
+
+  await resource.server.close();
+  resource.server = await createSignalingServer({ dataFile: join(resource.directory, 'identities.json'), env: adminEnv(), heartbeatIntervalMs: 60_000 });
+  const address = await resource.server.listen(0, '127.0.0.1');
+  resource.url = `ws://127.0.0.1:${address.port}/signal`;
+  const afterRestart = await openSocket(resource);
+  assert.equal((await register(afterRestart, token('3'), bundle(33, 0))).callsEnabled, false);
+});
+
+test('admin blocking ends calls, disconnects accounts, persists the list, and prevents reconnection', async () => {
+  const resource = await setup({ env: adminEnv() });
+  const admin = await openSocket(resource);
+  const target = await openSocket(resource);
+  const adminInfo = await register(admin, token('6'), bundle(36, 0));
+  const targetInfo = await register(target, token('7'), bundle(37, 0));
+  assert.equal((await adminLogin(admin)).ok, true);
+  assert.equal((await adminAction(admin, 'block', { number: adminInfo.number })).error, 'self_block_denied');
+
+  const callCreated = waitFor(admin, (message) => message.type === 'call_created');
+  const incoming = waitFor(target, (message) => message.type === 'incoming');
+  admin.send(JSON.stringify({ type: 'create_call', members: [targetInfo.number] }));
+  const call = await callCreated;
+  await incoming;
+  assert.deepEqual((await adminAction(admin, 'status')).result.calls, [{ id: call.callId, participantCount: 2 }]);
+  const endedAdmin = waitFor(admin, (message) => message.type === 'ended');
+  const endedTarget = waitFor(target, (message) => message.type === 'ended');
+  const endedCall = await adminAction(admin, 'end_call', { callId: call.callId });
+  assert.deepEqual(endedCall.result, { callId: call.callId, ended: true });
+  assert.deepEqual(await Promise.all([endedAdmin, endedTarget]), [
+    { type: 'ended', callId: call.callId, reason: 'admin_ended' },
+    { type: 'ended', callId: call.callId, reason: 'admin_ended' },
+  ]);
+
+  const nextCallCreated = waitFor(admin, (message) => message.type === 'call_created');
+  const nextIncoming = waitFor(target, (message) => message.type === 'incoming');
+  admin.send(JSON.stringify({ type: 'create_call', members: [targetInfo.number] }));
+  const nextCall = await nextCallCreated;
+  await nextIncoming;
+  const ended = waitFor(admin, (message) => message.type === 'ended');
+  const blocked = waitFor(target, (message) => message.type === 'error' && message.code === 'blocked');
+  const disconnected = new Promise((resolve) => target.once('close', resolve));
+  const result = await adminAction(admin, 'block', { number: targetInfo.number });
+  assert.deepEqual(result.result, { number: targetInfo.number, blocked: true });
+  assert.deepEqual(await ended, { type: 'ended', callId: nextCall.callId, reason: 'blocked' });
+  await blocked;
+  await disconnected;
+
+  const status = await adminAction(admin, 'status');
+  assert.deepEqual(status.result.blockedNumbers, [targetInfo.number]);
+  assert.deepEqual(status.result.calls, []);
+  assert.equal(JSON.stringify(status.result.events).includes(targetInfo.number), false);
+  const unblocked = await adminAction(admin, 'unblock', { number: targetInfo.number });
+  assert.deepEqual(unblocked.result, { number: targetInfo.number, blocked: false });
+  await adminAction(admin, 'block', { number: targetInfo.number });
+
+  await resource.server.close();
+  resource.server = await createSignalingServer({ dataFile: join(resource.directory, 'identities.json'), env: adminEnv(), heartbeatIntervalMs: 60_000 });
+  const address = await resource.server.listen(0, '127.0.0.1');
+  resource.url = `ws://127.0.0.1:${address.port}/signal`;
+  const reconnect = await openSocket(resource);
+  assert.equal((await register(reconnect, token('7'), bundle(37, 0))).code, 'blocked');
 });

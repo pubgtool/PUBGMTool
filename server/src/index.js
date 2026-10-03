@@ -1,4 +1,4 @@
-import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -13,6 +13,13 @@ const MAX_PAYLOAD = 64 * 1024;
 const MAX_ENVELOPE_BYTES = 24 * 1024;
 const MAX_BUFFERED_BYTES = 512 * 1024;
 const MAX_PRE_KEYS = 1_000;
+const DEFAULT_ADMIN_SETTINGS = Object.freeze({
+  callsEnabled: true,
+  chatEnabled: true,
+  registrationEnabled: true,
+  maxParticipants: 8,
+});
+const ADMIN_EVENT_LIMIT = 100;
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -146,6 +153,89 @@ function consumeRateLimit(map, key, { limit, windowMs, now = Date.now() }) {
   return bucket.count <= limit;
 }
 
+function canonicalBase64(value) {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  const decoded = Buffer.from(value, 'base64');
+  return decoded.toString('base64') === value ? decoded : undefined;
+}
+
+function parseAdminPasswordHash(value) {
+  if (typeof value !== 'string' || value.length > 256) return undefined;
+  const match = /^scrypt\$([A-Za-z0-9+/]+={0,2})\$([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (!match) return undefined;
+  const salt = canonicalBase64(match[1]);
+  const digest = canonicalBase64(match[2]);
+  if (!salt || salt.length < 16 || salt.length > 64 || !digest || digest.length !== 64) return undefined;
+  return { salt, digest };
+}
+
+function deriveAdminDigest(code, salt) {
+  return new Promise((resolve, reject) => {
+    scrypt(code, salt, 64, { maxmem: 64 * 1024 * 1024 }, (error, digest) => {
+      if (error) reject(error);
+      else resolve(digest);
+    });
+  });
+}
+
+function validateAdminSettings(settings) {
+  return isObject(settings) && hasOnlyKeys(settings, Object.keys(DEFAULT_ADMIN_SETTINGS))
+    && typeof settings.callsEnabled === 'boolean'
+    && typeof settings.chatEnabled === 'boolean'
+    && typeof settings.registrationEnabled === 'boolean'
+    && Number.isSafeInteger(settings.maxParticipants) && settings.maxParticipants >= 2 && settings.maxParticipants <= 8;
+}
+
+async function loadAdminState(dataFile) {
+  let text;
+  try {
+    text = await readFile(dataFile, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return { settings: { ...DEFAULT_ADMIN_SETTINGS }, blockedNumbers: [] };
+    throw error;
+  }
+
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw new Error(`Admin store is not valid JSON: ${dataFile}`);
+  }
+  if (!isObject(document) || !hasOnlyKeys(document, ['version', 'settings', 'blockedNumbers'])
+    || document.version !== 1 || !validateAdminSettings(document.settings)
+    || !Array.isArray(document.blockedNumbers)
+    || document.blockedNumbers.some((number) => typeof number !== 'string' || !NUMBER_PATTERN.test(number))
+    || new Set(document.blockedNumbers).size !== document.blockedNumbers.length) {
+    throw new Error(`Admin store has an invalid format: ${dataFile}`);
+  }
+  return { settings: { ...document.settings }, blockedNumbers: [...document.blockedNumbers] };
+}
+
+async function saveAdminState(dataFile, state) {
+  await mkdir(dirname(dataFile), { recursive: true });
+  const temporaryFile = `${dataFile}.${process.pid}.${randomUUID()}.tmp`;
+  const content = `${JSON.stringify({ version: 1, ...state }, null, 2)}\n`;
+  try {
+    const file = await open(temporaryFile, 'wx', 0o600);
+    try {
+      await file.writeFile(content, 'utf8');
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporaryFile, dataFile);
+    try {
+      const directory = await open(dirname(dataFile), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    } catch {
+      // Some filesystems do not allow syncing directory handles.
+    }
+  } catch (error) {
+    await unlink(temporaryFile).catch(() => {});
+    throw error;
+  }
+}
+
 function buildMediaConfig(env) {
   const value = env.LIVEKIT_URL?.trim();
   const apiKey = env.LIVEKIT_API_KEY?.trim();
@@ -183,6 +273,15 @@ export async function createSignalingServer(options = {}) {
   const env = options.env ?? process.env;
   const defaultDataFile = fileURLToPath(new URL('../data/identities.json', import.meta.url));
   const dataFile = resolve(options.dataFile ?? env.DATA_FILE ?? defaultDataFile);
+  const adminDataFile = resolve(options.adminDataFile ?? env.ADMIN_DATA_FILE ?? `${dataFile}.admin.json`);
+  if (adminDataFile === dataFile) throw new Error('ADMIN_DATA_FILE must be separate from DATA_FILE');
+  const adminPasswordHash = parseAdminPasswordHash(env.ADMIN_PASSWORD_HASH);
+  const adminSessionMs = options.adminSessionMs ?? 5 * 60_000;
+  const adminRateWindowMs = options.adminRateWindowMs ?? 60_000;
+  const adminLockMs = options.adminLockMs ?? 60_000;
+  const adminMaxFailures = options.adminMaxFailures ?? 5;
+  const maxConcurrentAdminLogins = options.maxConcurrentAdminLogins ?? 8;
+  const deriveAdminPassword = options.deriveAdminPassword ?? deriveAdminDigest;
   const maxIdentities = options.maxIdentities ?? 100_000;
   const maxConnections = options.maxConnections ?? 1_000;
   const maxRegistrationsPerIp = options.maxRegistrationsPerIp ?? 30;
@@ -196,11 +295,22 @@ export async function createSignalingServer(options = {}) {
   const ringingTimeoutMs = options.ringingTimeoutMs ?? 45_000;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000;
   const identities = await loadIdentities(dataFile, maxIdentities);
+  const storedAdminState = await loadAdminState(adminDataFile);
   const numberOwners = new Map([...identities].map(([hash, entry]) => [entry.number, hash]));
+  if (storedAdminState.blockedNumbers.length > maxIdentities
+    || storedAdminState.blockedNumbers.some((number) => !numberOwners.has(number))) {
+    throw new Error(`Admin store references invalid or unknown accounts: ${adminDataFile}`);
+  }
   const sessions = new Map();
   const memberships = new Map();
   const calls = new Map();
   const registrationRates = new Map();
+  const adminLoginRates = new Map();
+  const adminEvents = [];
+  let pendingAdminLogins = 0;
+  let adminSettings = storedAdminState.settings;
+  let blockedNumbers = new Set(storedAdminState.blockedNumbers);
+  const startedAt = Date.now();
   const deliveredEnvelopes = new Map();
   const mediaConfig = buildMediaConfig(env);
   const tokenIssuer = options.tokenIssuer ?? (async ({ identity, room, apiKey, apiSecret }) => {
@@ -239,6 +349,257 @@ export async function createSignalingServer(options = {}) {
     send(socket, { type: 'error', code, ...extra });
   }
 
+  function appendAdminEvent(event, outcome = 'success') {
+    adminEvents.push({ at: new Date().toISOString(), event, outcome });
+    if (adminEvents.length > ADMIN_EVENT_LIMIT) adminEvents.splice(0, adminEvents.length - ADMIN_EVENT_LIMIT);
+  }
+
+  function capabilities() {
+    return {
+      type: 'capabilities',
+      ...adminSettings,
+      mediaReady: Boolean(mediaConfig),
+    };
+  }
+
+  function adminResult(session, requestId, ok, values = {}) {
+    send(session.socket, { type: 'admin_result', requestId, ok, ...values });
+  }
+
+  function takeAdminLoginSlot(ip) {
+    const now = Date.now();
+    let bucket = adminLoginRates.get(ip);
+    if (!bucket && adminLoginRates.size >= maxRateLimitEntries) {
+      for (const [key, candidate] of adminLoginRates) {
+        if (candidate.pending === 0 && candidate.lockUntil <= now
+          && now - candidate.windowStart >= adminRateWindowMs) adminLoginRates.delete(key);
+        if (adminLoginRates.size < maxRateLimitEntries) break;
+      }
+      if (adminLoginRates.size >= maxRateLimitEntries) return undefined;
+    }
+    if (!bucket) {
+      bucket = { windowStart: now, failures: 0, pending: 0, lockUntil: 0 };
+      adminLoginRates.set(ip, bucket);
+    }
+    if (bucket.lockUntil > now) return undefined;
+    if (now - bucket.windowStart >= adminRateWindowMs && bucket.pending === 0) {
+      bucket.windowStart = now;
+      bucket.failures = 0;
+      bucket.lockUntil = 0;
+    }
+    if (bucket.failures + bucket.pending >= adminMaxFailures) return undefined;
+    bucket.pending += 1;
+    return bucket;
+  }
+
+  async function loginAdmin(session, requestId, code) {
+    if (!session.number) {
+      adminResult(session, requestId, false, { error: 'registration_required' });
+      return;
+    }
+    if (!adminPasswordHash) {
+      adminResult(session, requestId, false, { error: 'admin_disabled' });
+      return;
+    }
+    if (session.adminLoginPending) {
+      adminResult(session, requestId, false, { error: 'rate_limited' });
+      return;
+    }
+    if (pendingAdminLogins >= maxConcurrentAdminLogins) {
+      adminResult(session, requestId, false, { error: 'rate_limited' });
+      return;
+    }
+    const bucket = takeAdminLoginSlot(session.ip);
+    if (!bucket) {
+      adminResult(session, requestId, false, { error: 'rate_limited' });
+      return;
+    }
+    session.adminLoginPending = true;
+    pendingAdminLogins += 1;
+    let valid = false;
+    try {
+      if (typeof code === 'string' && code.length <= 256 && [...code].length >= 12 && [...code].length <= 128
+        && Buffer.byteLength(code, 'utf8') <= 512) {
+        const digest = await deriveAdminPassword(code, adminPasswordHash.salt);
+        valid = timingSafeEqual(digest, adminPasswordHash.digest);
+      }
+    } catch {
+      valid = false;
+    } finally {
+      session.adminLoginPending = false;
+      pendingAdminLogins -= 1;
+    }
+    bucket.pending -= 1;
+    if (!valid) {
+      bucket.failures += 1;
+      if (bucket.failures >= adminMaxFailures) bucket.lockUntil = Date.now() + adminLockMs;
+      if (!session.closed && session.socket.readyState === WebSocket.OPEN) {
+        adminResult(session, requestId, false, { error: 'invalid_credentials' });
+      }
+      return;
+    }
+    bucket.failures = 0;
+    bucket.lockUntil = 0;
+    if (bucket.pending === 0) adminLoginRates.delete(session.ip);
+    if (session.closed || session.socket.readyState !== WebSocket.OPEN) return;
+    session.adminExpiresAt = Date.now() + adminSessionMs;
+    appendAdminEvent('admin_login');
+    adminResult(session, requestId, true, { expiresAt: session.adminExpiresAt });
+  }
+
+  function adminStatus() {
+    return {
+      settings: { ...adminSettings },
+      metrics: {
+        online: sessions.size,
+        registered: identities.size,
+        activeCalls: calls.size,
+        mediaConfigured: Boolean(mediaConfig),
+        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1_000),
+      },
+      blockedNumbers: [...blockedNumbers].sort(),
+      calls: [...calls.values()].map((call) => ({ id: call.id, participantCount: call.members.length })),
+      events: adminEvents.map((entry) => ({ ...entry })),
+    };
+  }
+
+  async function executeAdminAction(session, message) {
+    const { action, requestId } = message;
+    if (action === 'logout') {
+      session.adminExpiresAt = undefined;
+      appendAdminEvent('admin_logout');
+      return { loggedOut: true };
+    }
+    if (action === 'status') return adminStatus();
+    if (action === 'update_settings') {
+      const nextSettings = { ...adminSettings, ...message.settings };
+      if (!validateAdminSettings(nextSettings)) return { error: 'invalid_settings' };
+      const nextState = { settings: nextSettings, blockedNumbers: [...blockedNumbers] };
+      await saveAdminState(adminDataFile, nextState);
+      adminSettings = nextSettings;
+      appendAdminEvent('settings_updated');
+      if (!adminSettings.callsEnabled) {
+        for (const call of [...calls.values()]) endCall(call, 'admin_disabled');
+      }
+      for (const socket of wss.clients) {
+        if (socket.readyState === WebSocket.OPEN) send(socket, capabilities());
+      }
+      return { settings: { ...adminSettings } };
+    }
+    if (action === 'block' || action === 'unblock') {
+      const number = message.number;
+      if (!numberOwners.has(number)) return { error: 'not_found' };
+      if (action === 'block' && session.number === number) return { error: 'self_block_denied' };
+      const nextBlocked = new Set(blockedNumbers);
+      if (action === 'block') nextBlocked.add(number);
+      else nextBlocked.delete(number);
+      await saveAdminState(adminDataFile, { settings: { ...adminSettings }, blockedNumbers: [...nextBlocked] });
+      blockedNumbers = nextBlocked;
+      appendAdminEvent(action === 'block' ? 'number_blocked' : 'number_unblocked');
+      if (action === 'block') {
+        endCallForNumber(number, 'blocked');
+        const target = sessions.get(number);
+        if (target) {
+          error(target.socket, 'blocked');
+          target.socket.close(4003, 'blocked');
+          cleanupSession(target);
+        }
+      }
+      return { number, blocked: blockedNumbers.has(number) };
+    }
+    if (action === 'end_call') {
+      const call = calls.get(message.callId);
+      if (!call) return { error: 'not_found' };
+      endCall(call, 'admin_ended');
+      appendAdminEvent('call_ended_by_admin');
+      return { callId: message.callId, ended: true };
+    }
+    if (action === 'clear_events') {
+      adminEvents.length = 0;
+      appendAdminEvent('events_cleared');
+      return { cleared: true };
+    }
+    return { error: 'unknown_action' };
+  }
+
+  function queueAdminOperation(session, message) {
+    const { requestId } = message;
+    if (pendingStoreOperations >= maxPendingStoreOperations) {
+      adminResult(session, requestId, false, { error: 'rate_limited' });
+      return;
+    }
+    pendingStoreOperations += 1;
+    const task = storeQueue.then(async () => {
+      if (session.closed || session.socket.readyState !== WebSocket.OPEN) return;
+      if (!session.adminExpiresAt) {
+        adminResult(session, requestId, false, { error: 'unauthorized' });
+        return;
+      }
+      if (session.adminExpiresAt <= Date.now()) {
+        session.adminExpiresAt = undefined;
+        adminResult(session, requestId, false, { error: 'expired' });
+        return;
+      }
+      try {
+        const result = await executeAdminAction(session, message);
+        if (session.closed || session.socket.readyState !== WebSocket.OPEN) return;
+        if (result.error) adminResult(session, requestId, false, { error: result.error });
+        else adminResult(session, requestId, true, { result });
+      } catch {
+        adminResult(session, requestId, false, { error: 'storage_unavailable' });
+      }
+    });
+    storeQueue = task.finally(() => { pendingStoreOperations -= 1; });
+  }
+
+  function handleAdminMessage(session, message) {
+    if (typeof message.requestId !== 'string' || !UUID_PATTERN.test(message.requestId)) {
+      return error(session.socket, 'invalid_message');
+    }
+    if (message.type === 'admin_login') {
+      if (!hasOnlyKeys(message, ['type', 'requestId', 'code']) || typeof message.code !== 'string') {
+        return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+      }
+      return void loginAdmin(session, message.requestId, message.code);
+    }
+    if (!hasOnlyKeys(message, ['type', 'requestId', 'action', 'settings', 'number', 'callId'])
+      || typeof message.action !== 'string') return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+    if (message.action === 'status' || message.action === 'clear_events' || message.action === 'logout') {
+      if (Object.keys(message).some((key) => !['type', 'requestId', 'action'].includes(key))) {
+        return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+      }
+    } else if (message.action === 'update_settings') {
+      if (!isObject(message.settings) || Object.keys(message.settings).length === 0
+        || !hasOnlyKeys(message.settings, Object.keys(DEFAULT_ADMIN_SETTINGS))) {
+        return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+      }
+      for (const [key, value] of Object.entries(message.settings)) {
+        if (key === 'maxParticipants' ? !Number.isSafeInteger(value) || value < 2 || value > 8 : typeof value !== 'boolean') {
+          return adminResult(session, message.requestId, false, { error: 'invalid_settings' });
+        }
+      }
+      if (Object.keys(message).some((key) => !['type', 'requestId', 'action', 'settings'].includes(key))) {
+        return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+      }
+    } else if (message.action === 'block' || message.action === 'unblock') {
+      if (typeof message.number !== 'string' || !NUMBER_PATTERN.test(message.number)
+        || Object.keys(message).some((key) => !['type', 'requestId', 'action', 'number'].includes(key))) {
+        return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+      }
+    } else if (message.action === 'end_call') {
+      if (typeof message.callId !== 'string' || !UUID_PATTERN.test(message.callId)
+        || Object.keys(message).some((key) => !['type', 'requestId', 'action', 'callId'].includes(key))) {
+        return adminResult(session, message.requestId, false, { error: 'invalid_message' });
+      }
+    }
+    if (!session.adminExpiresAt) return adminResult(session, message.requestId, false, { error: 'unauthorized' });
+    if (session.adminExpiresAt <= Date.now()) {
+      session.adminExpiresAt = undefined;
+      return adminResult(session, message.requestId, false, { error: 'expired' });
+    }
+    queueAdminOperation(session, message);
+  }
+
   function queueStoreOperation(session, operation, onFailure) {
     if (pendingStoreOperations >= maxPendingStoreOperations) {
       onFailure('rate_limited');
@@ -260,6 +621,7 @@ export async function createSignalingServer(options = {}) {
     if (calls.get(call.id) !== call) return;
     calls.delete(call.id);
     clearTimeout(call.timer);
+    appendAdminEvent('call_ended');
     for (const number of call.members) {
       if (memberships.get(number) === call.id) memberships.delete(number);
       const member = sessions.get(number);
@@ -311,6 +673,12 @@ export async function createSignalingServer(options = {}) {
 
     const hash = createHash('sha256').update(tokenValue, 'utf8').digest('hex');
     const existing = identities.get(hash);
+    if (existing && blockedNumbers.has(existing.number)) {
+      error(session.socket, 'blocked');
+      session.socket.close(4003, 'blocked');
+      return;
+    }
+    if (!existing && !adminSettings.registrationEnabled) return error(session.socket, 'registration_disabled');
     if (existing?.bundle && existing.bundle.identityKey !== publicBundle.identityKey) {
       return error(session.socket, 'identity_mismatch');
     }
@@ -346,10 +714,18 @@ export async function createSignalingServer(options = {}) {
     session.number = number;
     sessions.set(number, session);
     clearTimeout(timers.get(session));
-    send(session.socket, { type: 'registered', number, mediaReady: Boolean(mediaConfig) });
+    appendAdminEvent('registration');
+    send(session.socket, {
+      type: 'registered', number, mediaReady: Boolean(mediaConfig),
+      callsEnabled: adminSettings.callsEnabled,
+      chatEnabled: adminSettings.chatEnabled,
+      registrationEnabled: adminSettings.registrationEnabled,
+      maxParticipants: adminSettings.maxParticipants,
+    });
   }
 
   async function updateKeys(session, bundle) {
+    if (!adminSettings.chatEnabled) return error(session.socket, 'chat_disabled');
     const publicBundle = validateBundle(bundle);
     if (!publicBundle) return error(session.socket, 'invalid_bundle');
     const hash = numberOwners.get(session.number);
@@ -366,6 +742,8 @@ export async function createSignalingServer(options = {}) {
   }
 
   async function lookupBundle(session, message) {
+    if (!adminSettings.chatEnabled) return error(session.socket, 'chat_disabled', { requestId: message.requestId });
+    if (blockedNumbers.has(message.to)) return error(session.socket, 'not_found', { requestId: message.requestId });
     const hash = numberOwners.get(message.to);
     const target = hash && identities.get(hash);
     if (!target?.bundle) return error(session.socket, 'not_found', { requestId: message.requestId });
@@ -395,6 +773,8 @@ export async function createSignalingServer(options = {}) {
   }
 
   function relayEnvelope(session, message) {
+    if (!adminSettings.chatEnabled) return error(session.socket, 'chat_disabled', { id: message.id });
+    if (blockedNumbers.has(message.to)) return error(session.socket, 'blocked', { id: message.id });
     const recipient = sessions.get(message.to);
     if (!recipient || recipient.socket.readyState !== WebSocket.OPEN) {
       return error(session.socket, 'offline', { id: message.id });
@@ -418,7 +798,8 @@ export async function createSignalingServer(options = {}) {
   }
 
   function createCall(session, members) {
-    if (!Array.isArray(members) || members.length < 1 || members.length > 7
+    if (!adminSettings.callsEnabled) return error(session.socket, 'calls_disabled');
+    if (!Array.isArray(members) || members.length < 1 || members.length > adminSettings.maxParticipants - 1
       || members.some((member) => typeof member !== 'string' || !NUMBER_PATTERN.test(member) || member === session.number)
       || new Set(members).size !== members.length) return error(session.socket, 'invalid_message');
     if (memberships.has(session.number)) return error(session.socket, 'busy');
@@ -441,9 +822,11 @@ export async function createSignalingServer(options = {}) {
     const invitation = { callId, room, members: roster, owner: call.owner };
     send(session.socket, { type: 'call_created', ...invitation });
     for (const number of members) send(sessions.get(number).socket, { type: 'incoming', ...invitation });
+    appendAdminEvent('call_created');
   }
 
   async function joinCall(session, callId) {
+    if (!adminSettings.callsEnabled) return error(session.socket, 'calls_disabled', { callId });
     const call = calls.get(callId);
     if (!call || !call.members.includes(session.number) || memberships.get(session.number) !== callId) {
       return error(session.socket, 'unauthorized', { callId });
@@ -477,6 +860,7 @@ export async function createSignalingServer(options = {}) {
   }
 
   function handleMessage(session, message) {
+    if (message.type === 'admin_login' || message.type === 'admin') return handleAdminMessage(session, message);
     if (!session.number) {
       if (message.type !== 'register' || !hasOnlyKeys(message, ['type', 'token', 'bundle'])) return error(session.socket, 'registration_required');
       return queueStoreOperation(
@@ -552,6 +936,8 @@ export async function createSignalingServer(options = {}) {
       socket,
       ip: request.socket.remoteAddress ?? 'unknown',
       number: undefined,
+      adminExpiresAt: undefined,
+      adminLoginPending: false,
       closed: false,
       rateLimited: false,
       alive: true,
@@ -596,6 +982,7 @@ export async function createSignalingServer(options = {}) {
     });
     socket.on('close', () => {
       clearTimeout(timers.get(session));
+      session.adminExpiresAt = undefined;
       cleanupSession(session);
     });
     socket.on('error', () => {});

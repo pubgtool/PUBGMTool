@@ -236,6 +236,7 @@ class SecureStore(context: Context) : AutoCloseable {
                 }
                 return@transaction EncryptedEnvelope(existing.cipherType, existing.body)
             }
+            check(findMessage(id) == null) { "Message id is already assigned to another record" }
             val envelope = encryptInternal(peer, plaintext)
             if (displayText != null) saveMessageInternal(peer, id, displayText, true, "queued")
             putOutboxInternal(peer, id, envelope)
@@ -312,13 +313,61 @@ class SecureStore(context: Context) : AutoCloseable {
         db.update("messages", values, "id=?", arrayOf(id))
     }
 
+    /** Hides and wipes a message on this device; a message already delivered to a peer cannot be recalled. */
+    @Synchronized
+    fun deleteMessage(id: String) {
+        ensureOpen()
+        validId(id)
+        transaction {
+            val message = db.query(
+                "messages", arrayOf("peer", "outgoing"), "id=?", arrayOf(id), null, null, null, "1",
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) to (cursor.getInt(1) != 0) else null
+            } ?: return@transaction
+
+            wipeMessageText(message.first, id)
+            if (message.second) removeQueuedMessage(id)
+        }
+    }
+
+    /** Hides and wipes this conversation on this device; already-delivered messages remain on other devices. */
+    @Synchronized
+    fun clearConversation(peer: String) {
+        ensureOpen()
+        val checkedPeer = validNumber(peer)
+        transaction {
+            var lastSequence = 0L
+            while (true) {
+                val batch = ArrayList<Pair<Long, String>>(MAX_PAGE_SIZE)
+                db.query(
+                    "messages", arrayOf("sequence", "id"), "peer=? AND sequence>? AND deleted=0",
+                    arrayOf(checkedPeer, lastSequence.toString()), null, null, "sequence ASC", MAX_PAGE_SIZE.toString(),
+                ).use { cursor ->
+                    while (cursor.moveToNext()) batch += cursor.getLong(0) to cursor.getString(1)
+                }
+                if (batch.isEmpty()) break
+                batch.forEach { (sequence, id) ->
+                    wipeMessageText(checkedPeer, id)
+                    lastSequence = sequence
+                }
+            }
+
+            val queuedIds = ArrayList<String>()
+            db.query("outbox", arrayOf("id"), "peer=?", arrayOf(checkedPeer), null, null, null).use { cursor ->
+                while (cursor.moveToNext()) queuedIds += cursor.getString(0)
+            }
+            db.delete("outbox", "peer=?", arrayOf(checkedPeer))
+            queuedIds.forEach { deleteSecret("outbox-request", it) }
+        }
+    }
+
     /** Returns an ascending page using a keyset cursor; at most 100 encrypted message bodies are opened. */
     @Synchronized
     fun messages(peer: String, before: Long? = null, limit: Int = 40): List<ChatMessage> {
         ensureOpen()
         val checkedPeer = validNumber(peer)
         val boundedLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
-        val selection = if (before == null) "peer=?" else "peer=? AND sequence<?"
+        val selection = if (before == null) "peer=? AND deleted=0" else "peer=? AND deleted=0 AND sequence<?"
         val args = if (before == null) arrayOf(checkedPeer) else arrayOf(checkedPeer, before.toString())
         val descending = ArrayList<ChatMessage>(boundedLimit)
         db.query(
@@ -348,12 +397,12 @@ class SecureStore(context: Context) : AutoCloseable {
     @Synchronized
     fun conversations(before: Long? = null, limit: Int = 40): List<ChatMessage> {
         ensureOpen()
-        val cursorClause = if (before == null) "" else "WHERE m.sequence < ?"
+        val cursorClause = if (before == null) "WHERE m.deleted=0" else "WHERE m.deleted=0 AND m.sequence < ?"
         val args = if (before == null) arrayOf(limit.coerceIn(1, MAX_PAGE_SIZE).toString())
             else arrayOf(before.toString(), limit.coerceIn(1, MAX_PAGE_SIZE).toString())
         val result = ArrayList<ChatMessage>()
         db.rawQuery("""SELECT m.id, m.peer, m.text, m.outgoing, m.status, m.sequence, m.created_at
-            FROM messages m JOIN (SELECT peer, MAX(sequence) AS latest FROM messages GROUP BY peer) c
+            FROM messages m JOIN (SELECT peer, MAX(sequence) AS latest FROM messages WHERE deleted=0 GROUP BY peer) c
             ON m.sequence=c.latest $cursorClause ORDER BY m.sequence DESC LIMIT ?""", args).use { cursor ->
             while (cursor.moveToNext()) {
                 val id = cursor.getString(0)
@@ -530,6 +579,19 @@ class SecureStore(context: Context) : AutoCloseable {
             put("created_at", System.currentTimeMillis())
         }
         db.insertOrThrow("messages", null, values)
+    }
+
+    private fun wipeMessageText(peer: String, id: String) {
+        val values = ContentValues().apply {
+            put("text", seal("messages", scopedKey(peer, id), byteArrayOf()))
+            put("deleted", 1)
+        }
+        db.update("messages", values, "id=? AND peer=?", arrayOf(id, peer))
+    }
+
+    private fun removeQueuedMessage(id: String) {
+        db.delete("outbox", "id=?", arrayOf(id))
+        deleteSecret("outbox-request", id)
     }
 
     private fun findMessage(id: String): ChatMessage? {
@@ -935,7 +997,8 @@ class SecureStore(context: Context) : AutoCloseable {
                 peer TEXT PRIMARY KEY, identity BLOB NOT NULL, verified INTEGER NOT NULL DEFAULT 0)""")
             database.execSQL("""CREATE TABLE messages (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, peer TEXT NOT NULL,
-                text BLOB NOT NULL, outgoing INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL)""")
+                text BLOB NOT NULL, outgoing INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0)""")
             database.execSQL("CREATE INDEX messages_peer_sequence ON messages(peer, sequence DESC)")
             database.execSQL("""CREATE TABLE outbox (
                 id TEXT PRIMARY KEY, peer TEXT NOT NULL, cipher_type INTEGER NOT NULL,
@@ -944,13 +1007,17 @@ class SecureStore(context: Context) : AutoCloseable {
         }
 
         override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            throw SQLiteException("Unsupported secure-store schema upgrade $oldVersion -> $newVersion")
+            if (oldVersion == 1 && newVersion == 2) {
+                database.execSQL("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            } else {
+                throw SQLiteException("Unsupported secure-store schema upgrade $oldVersion -> $newVersion")
+            }
         }
     }
 
     companion object {
         private const val DATABASE_NAME = "line-secure-store.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
         private const val DEVICE_ID = 1
         private const val PREKEY_POOL_SIZE = 100
         private const val MAX_PAGE_SIZE = 100

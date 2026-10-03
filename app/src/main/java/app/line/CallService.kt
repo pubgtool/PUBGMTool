@@ -32,6 +32,9 @@ class CallService : Service() {
     private var generation = 0
     private var retryJob: Job? = null
     private val lookups = mutableMapOf<String, CompletableDeferred<JSONObject>>()
+    private val adminRequests = mutableMapOf<String, CompletableDeferred<JSONObject>>()
+    private var adminExpiresAt = 0L
+    private var adminEpoch = 0
     private val incoming = Channel<Pair<Int, JSONObject>>(64)
     private val chatEnvelopeIds = mutableSetOf<String>()
     private var callId = ""
@@ -130,6 +133,58 @@ class CallService : Service() {
         update(state.copy(highQuality = highQuality))
     }
 
+    fun isAdmin(): Boolean = state.online && System.currentTimeMillis() < adminExpiresAt
+
+    suspend fun adminLogin(code: String): JSONObject {
+        require(code.length in 12..128 && state.online) { "Подключитесь и введите секретный код" }
+        val epoch = adminEpoch
+        val result = adminRequest("admin_login", JSONObject().put("code", code))
+        if (epoch != adminEpoch) {
+            send("admin", JSONObject().put("requestId", UUID.randomUUID().toString()).put("action", "logout"))
+            error("Вход отменён")
+        }
+        val expires = result.optLong("expiresAt")
+        check(expires > System.currentTimeMillis()) { "Срок сессии истёк" }
+        adminExpiresAt = minOf(expires, System.currentTimeMillis() + 300_000)
+        return result
+    }
+
+    suspend fun adminCommand(action: String, extra: JSONObject = JSONObject()): JSONObject {
+        check(isAdmin()) { "Войдите в админ-панель заново" }
+        val response = adminRequest("admin", extra.put("action", action))
+        return response.optJSONObject("result") ?: JSONObject()
+    }
+
+    fun lockAdmin() {
+        adminEpoch++
+        if (adminExpiresAt > 0) send("admin", JSONObject().put("requestId", UUID.randomUUID().toString()).put("action", "logout"))
+        adminExpiresAt = 0
+        adminRequests.values.forEach { it.completeExceptionally(IllegalStateException("Админ-сессия закрыта")) }
+        adminRequests.clear()
+    }
+
+    private suspend fun adminRequest(type: String, payload: JSONObject): JSONObject {
+        require(state.online)
+        val id = UUID.randomUUID().toString()
+        val request = CompletableDeferred<JSONObject>()
+        adminRequests[id] = request
+        try {
+            check(send(type, payload.put("requestId", id)))
+            val response = withTimeout(15_000) { request.await() }
+            if (!response.optBoolean("ok")) {
+                if (response.optString("error") in setOf("unauthorized", "expired", "invalid_credentials", "admin_disabled")) adminExpiresAt = 0
+                error(when (response.optString("error")) {
+                    "admin_disabled" -> "Админ-доступ не настроен на сервере"
+                    "rate_limited" -> "Слишком много попыток. Подождите минуту"
+                    "invalid_credentials" -> "Неверный секретный код"
+                    "unauthorized", "expired" -> "Войдите в админ-панель заново"
+                    else -> "Сервер отклонил действие"
+                })
+            }
+            return response
+        } finally { adminRequests.remove(id) }
+    }
+
     private fun token(): String = prefs.getString("token", null) ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it.toInt() and 255) }.also { prefs.edit().putString("token", it).commit() }
 
@@ -137,6 +192,7 @@ class CallService : Service() {
         retryJob?.cancel()
         registrationTimeout?.cancel()
         generation++
+        lockAdmin()
         val epoch = generation
         socket?.cancel()
         socket = null
@@ -161,7 +217,9 @@ class CallService : Service() {
                     if (epoch != generation) return@launch
                     val message = runCatching { JSONObject(text) }.getOrNull() ?: return@launch
                     val requestId = message.optString("requestId")
-                    if (requestId.isNotEmpty() && message.optString("type") == "bundle") {
+                    if (requestId.isNotEmpty() && message.optString("type") == "admin_result") {
+                        adminRequests.remove(requestId)?.complete(message)
+                    } else if (requestId.isNotEmpty() && message.optString("type") == "bundle") {
                         val pending = lookups.remove(requestId)
                         val bundle = message.optJSONObject("bundle")
                         if (bundle != null) pending?.complete(bundle)
@@ -179,6 +237,7 @@ class CallService : Service() {
     private suspend fun disconnected(epoch: Int) {
         if (epoch != generation) return
         generation++
+        lockAdmin()
         registrationTimeout?.cancel()
         socket?.cancel(); socket = null
         lookups.values.forEach { it.completeExceptionally(IllegalStateException("Offline")) }; lookups.clear()
@@ -211,6 +270,8 @@ class CallService : Service() {
     suspend fun verifyPeer(number: String) = db { it.verifyPeer(number) }
     suspend fun messages(number: String, before: Long? = null): List<ChatMessage> = db { it.messages(number, before, 40) }
     suspend fun conversations(before: Long? = null): List<ChatMessage> = db { it.conversations(before, 40) }
+    suspend fun deleteMessage(id: String) { db { it.deleteMessage(id) }; chatEnvelopeIds.remove(id); update(state.copy(chatVersion = state.chatVersion + 1)) }
+    suspend fun clearConversation(peer: String) { db { it.clearConversation(peer) }; update(state.copy(chatVersion = state.chatVersion + 1)) }
 
     private suspend fun preparePeer(number: String) {
         val exists = db { it.hasSession(number) }
@@ -223,6 +284,7 @@ class CallService : Service() {
     }
 
     suspend fun sendChat(number: String, text: String) {
+        check(state.chatEnabled) { "Администратор отключил сообщения" }
         require(text.isNotBlank() && text.toByteArray().size <= 4_096)
         preparePeer(number)
         val id = UUID.randomUUID().toString()
@@ -241,10 +303,17 @@ class CallService : Service() {
                 require(number.matches(Regex("[0-9]{8}")))
                 db { it.setLocalNumber(number) }
                 prefs.edit().putString("number", number).apply()
-                update(state.copy(number = number, online = true, mediaReady = message.optBoolean("mediaReady"), message = "В сети"))
+                update(state.copy(number = number, online = true, mediaReady = message.optBoolean("mediaReady"),
+                    callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
+                    maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8), message = "В сети"))
                 val outbox = db { it.outbox() }
                 chatEnvelopeIds.addAll(outbox.map { it.id })
-                outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
+                if (state.chatEnabled) outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
+            }
+            "capabilities" -> {
+                update(state.copy(callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
+                    mediaReady = message.optBoolean("mediaReady"), maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8)))
+                if (!state.callsEnabled && state.phase != Phase.IDLE) finish("Администратор отключил звонки", false)
             }
             "bundle" -> lookups.remove(message.getString("requestId"))?.complete(message.getJSONObject("bundle"))
             "envelope" -> {
@@ -383,7 +452,7 @@ class CallService : Service() {
                 work {
                     if (intent.action == "dial" && state.phase == Phase.IDLE) {
                         val members = intent.getStringArrayListExtra("members")?.distinct() ?: emptyList()
-                        require(members.size in 1..7 && state.number !in members && state.online && state.mediaReady)
+                        require(members.size in 1 until state.maxParticipants && state.number !in members && state.online && state.mediaReady && state.callsEnabled)
                         update(state.copy(phase = Phase.OUTGOING, peer = members.joinToString(", "), members = listOf(state.number) + members, message = "Создаём группу…"))
                         withTimeout(20_000) { for (number in members) preparePeer(number) }
                         acquireWakeLock()
@@ -460,6 +529,7 @@ class CallService : Service() {
     }
 
     override fun onDestroy() {
+        lockAdmin()
         generation++
         incoming.close()
         socket?.cancel(); socket = null

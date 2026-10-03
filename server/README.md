@@ -21,10 +21,33 @@ The service listens on `0.0.0.0:3000`. `GET /` and `/health` return only `{"stat
 | `PORT`, `HOST` | HTTP listen port and interface; defaults to `3000` and `0.0.0.0`. |
 | `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Server-only LiveKit credentials. Keep the secret off clients. If any media setting is missing or invalid, registration and messaging still work but joining returns `media_not_configured`. |
+| `ADMIN_PASSWORD_HASH` | Optional scrypt verifier (`scrypt$<salt-base64>$<digest-base64>`). Admin access is disabled when missing or malformed; never configure a plaintext admin code. |
+| `ADMIN_DATA_FILE` | Persistent admin settings and blocklist. Defaults to `${DATA_FILE}.admin.json`; atomic writes use mode `0600`, and an invalid existing file stops startup rather than silently resetting controls. |
 
 Room access tokens are signed by `livekit-server-sdk` 2.19.1 with a 120-second TTL. Each grant is restricted to one roster room, allows microphone publishing and subscription, and disallows data publishing. LiveKit API secrets are never returned to clients. Chat and signaling work without LiveKit being configured; the backend will not issue placeholder media tokens.
 
 The JSON store is written by an atomic rename with mode `0600`. Version-1 stores containing `{ "version": 1, "identities": { "<token hash>": "<number>" } }` are accepted. The next successful registration with a public bundle writes version 2 and preserves that installation's existing number. The store is a single-process file; do not run multiple API replicas against it. Back up the file securely.
+
+### Admin bootstrap and access
+
+Create a code with at least 12 characters and set only its scrypt hash in the service environment. The helper reads the code from standard input (hidden for terminal input) and prints only the hash:
+
+```sh
+cd server
+read -r -s -p 'Admin passphrase: ' ADMIN_CODE; printf '\n'
+export ADMIN_PASSWORD_HASH="$(printf '%s' "$ADMIN_CODE" | node scripts/hash-admin-password.mjs)"
+unset ADMIN_CODE
+npm start
+```
+
+Store the resulting hash in the server's protected environment configuration, not in source control or a client. Put the service behind HTTPS/WSS at a trusted reverse proxy; mobile clients must use the pinned `wss://` endpoint. Admin login is sent over the existing `/signal` WebSocket as `{ "type": "admin_login", "requestId": "550e8400-e29b-41d4-a716-446655440000", "code": "<passphrase>" }`. A valid login replies with `admin_result`, `ok: true`, and `expiresAt` (milliseconds since epoch). Sessions expire after five minutes and are tied to that socket; reconnecting requires a new login. Five failed attempts per peer address in one minute trigger a one-minute lock. Do not trust `X-Forwarded-For` for this limit.
+
+After login, send `{ "type": "admin", "requestId": "550e8400-e29b-41d4-a716-446655440000", "action": "status" }`. The response contains settings, aggregate online/registered/call metrics, blocked numbers, active call IDs and participant counts, and a maximum of 100 recent event records. Logs contain only fixed event/outcome labels and timestamps—no message bodies, credentials, numbers, addresses, or media data. Other actions are `update_settings` with a partial object of `callsEnabled`, `chatEnabled`, `registrationEnabled`, and/or `maxParticipants` (2–8); `block`/`unblock` with an existing 8-digit `number`; `end_call` with a `callId`; `clear_events`; and `logout`. Successful setting changes are persisted and broadcast as `capabilities`; turning calls off immediately ends active calls, chat-off blocks key publication/lookups and ciphertext relay, registration-off prevents new installations only, and blocking persists and disconnects that account. A blocked account cannot be blocked by its own session.
+
+
+Admin login is available only on a normally registered WebSocket connection; admin authorization then applies only to that same live socket.
+
+The defaults preserve existing service behavior. Admin controls and state are single-process, as is the identity store. Protect backups and server files; changing or deleting the admin JSON directly is an operator recovery action.
 
 ## WebSocket protocol
 
@@ -46,7 +69,7 @@ All messages are JSON text. Registration is required within 10 seconds. Maximum 
 }
 ```
 
-Success: `{ "type": "registered", "number": "12345678", "mediaReady": true }`. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
+Success includes `{ "type": "registered", "number": "12345678", "mediaReady": true, "callsEnabled": true, "chatEnabled": true, "registrationEnabled": true, "maxParticipants": 8 }`. `mediaReady` reflects valid LiveKit configuration, not network availability. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
 
 ### Encrypted messages
 
