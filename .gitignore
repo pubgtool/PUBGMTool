@@ -25,6 +25,7 @@ dist-ssr
 
 # Android and local signaling identities
 .gradle/
+.kotlin/
 .android-sdk/
 .tools/
 local.properties

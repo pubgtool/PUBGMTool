@@ -1,4 +1,8 @@
-# Replace this domain with your own. Caddy obtains and renews HTTPS certificates.
-line.example.org {
+# Replace these hosts with your own. Caddy obtains and renews HTTPS certificates.
+api.example.org {
     reverse_proxy 127.0.0.1:3000
+}
+
+rtc.example.org {
+    reverse_proxy 127.0.0.1:7880
 }

@@ -11,5 +11,10 @@ data class CallState(
     val speaker: Boolean = false,
     val connectedAt: Long = 0,
     val safetyCode: String = "",
+    val members: List<String> = emptyList(),
+    val participants: List<String> = emptyList(),
+    val chatVersion: Long = 0,
+    val configReady: Boolean = false,
+    val highQuality: Boolean = true,
     val message: String = "Укажите сервер, чтобы получить номер"
 )

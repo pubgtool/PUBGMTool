@@ -6,59 +6,83 @@ import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
+import android.net.*
 import android.os.*
+import app.line.crypto.ChatMessage
+import app.line.crypto.SecureStore
+import app.line.media.LiveCallEngine
+import app.line.media.MediaEvent
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import okhttp3.*
+import org.json.JSONArray
 import org.json.JSONObject
-import org.webrtc.*
-import org.webrtc.audio.JavaAudioDeviceModule
 import java.security.SecureRandom
-import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 class CallService : Service() {
     inner class LocalBinder : Binder() { val service get() = this@CallService }
     private val binder = LocalBinder()
-    private val main = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val listeners = mutableSetOf<(CallState) -> Unit>()
     private val prefs by lazy { getSharedPreferences("line", MODE_PRIVATE) }
-    private val http = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
+    private val secure by lazy { scope.async(Dispatchers.IO) { SecureStore(this@CallService) } }
+    private var http: OkHttpClient? = null
     private var socket: WebSocket? = null
     private var generation = 0
-    private var retry = 0
+    private var retryJob: Job? = null
+    private val lookups = mutableMapOf<String, CompletableDeferred<JSONObject>>()
+    private val incoming = Channel<Pair<Int, JSONObject>>(64)
+    private val chatEnvelopeIds = mutableSetOf<String>()
     private var callId = ""
-    private var caller = false
+    private var callRoom = ""
+    private var owner = ""
+    private var roomKey: ByteArray? = null
+    private val pendingKeys = mutableMapOf<String, JSONObject>()
+    private var engine: LiveCallEngine? = null
     private var foreground = false
-    private var factory: PeerConnectionFactory? = null
-    private var device: JavaAudioDeviceModule? = null
-    private var peerConnection: PeerConnection? = null
-    private var source: AudioSource? = null
-    private var track: AudioTrack? = null
-    private val pendingIce = mutableListOf<IceCandidate>()
-    private var iceServers = emptyList<PeerConnection.IceServer>()
-    private var relayOnly = false
     private var wakeLock: PowerManager.WakeLock? = null
-    private val audio by lazy { getSystemService(AudioManager::class.java) }
-    private var focus: AudioFocusRequest? = null
-    private var oldMode = AudioManager.MODE_NORMAL
-    private var oldSpeaker = false
-    private val callTimeout = Runnable { finish("Не удалось установить соединение") }
-    private val reconnect = Runnable { connect() }
+    private var callTimeout: Job? = null
+    private var registrationTimeout: Job? = null
+    private val network by lazy { getSystemService(ConnectivityManager::class.java) }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onLost(lost: Network) {
+            scope.launch {
+                delay(500)
+                val active = network.activeNetwork
+                if (active == null || network.getNetworkCapabilities(active)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) != true) {
+                    if (state.phase != Phase.IDLE) finish("Интернет отключён. Звонок завершён")
+                }
+            }
+        }
+    }
     var state = CallState()
         private set
 
     override fun onCreate() {
         super.onCreate()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel("calls", "Активный звонок", NotificationManager.IMPORTANCE_LOW)
-        )
-        state = state.copy(number = prefs.getString("number", "") ?: "")
-        connect()
+            NotificationChannel("calls", "Активный звонок", NotificationManager.IMPORTANCE_LOW))
+        state = state.copy(number = prefs.getString("number", "") ?: "", configReady = config() != null,
+            highQuality = prefs.getBoolean("high_quality", true))
+        network.registerDefaultNetworkCallback(networkCallback)
+        scope.launch {
+            for ((epoch, message) in incoming) {
+                if (epoch != generation) continue
+                try { receive(message) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    if (message.optString("type") == "envelope") {
+                        update(state.copy(message = "Неверное или повторное зашифрованное сообщение отклонено"))
+                    } else if (state.phase != Phase.IDLE || foreground) finish("Ошибка протокола звонка")
+                    else update(state.copy(message = "Неверное сообщение сервера отклонено"))
+                }
+            }
+        }
+        work { secure.await(); connect() }
     }
 
     override fun onBind(intent: Intent): IBinder = binder
-
     fun observe(listener: (CallState) -> Unit) { listeners.add(listener); listener(state) }
     fun removeObserver(listener: (CallState) -> Unit) { listeners.remove(listener) }
 
@@ -68,90 +92,299 @@ class CallService : Service() {
         if (foreground) getSystemService(NotificationManager::class.java).notify(1, notification())
     }
 
-    fun setEndpoint(endpoint: String) {
-        if (state.phase != Phase.IDLE || !Security.validEndpoint(endpoint)) return
-        prefs.edit().putString("endpoint", endpoint).remove("number").apply()
-        update(state.copy(number = ""))
-        retry = 0
-        connect()
-    }
-
-    private fun token(): String {
-        prefs.getString("token", null)?.let { return it }
-        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        return bytes.joinToString("") { "%02x".format(it.toInt() and 255) }.also {
-            prefs.edit().putString("token", it).commit()
+    private fun work(block: suspend () -> Unit): Job = scope.launch {
+        try { block() } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) {
+            if (state.phase != Phase.IDLE || foreground) finish("Ошибка защищённого соединения. Проверьте SAS участников")
+            else update(state.copy(message = "Операция не выполнена: проверьте сеть, ключи и SAS"))
         }
     }
 
-    private fun connect() {
-        main.removeCallbacks(reconnect)
+    private suspend fun <T> db(block: (SecureStore) -> T): T {
+        val store = secure.await()
+        return withContext(Dispatchers.IO) { block(store) }
+    }
+
+    fun config(): EndpointConfig? = runCatching {
+        EndpointConfig(prefs.getString("endpoint", "") ?: "", prefs.getString("api_pins", "") ?: "",
+            prefs.getString("media_endpoint", "") ?: "", prefs.getString("media_pins", "") ?: "").also { it.validate() }
+    }.getOrNull()
+
+    fun configure(value: EndpointConfig, highQuality: Boolean) {
+        if (state.phase != Phase.IDLE) return
+        value.validate()
+        val old = config()
+        require(old == null || old.apiUrl == value.apiUrl) { "Для другого сервера нужен отдельный профиль/очистка данных: номера и доверие не переносятся" }
+        prefs.edit().putString("endpoint", value.apiUrl).putString("api_pins", value.apiPins)
+            .putString("media_endpoint", value.mediaUrl).putString("media_pins", value.mediaPins)
+            .putBoolean("high_quality", highQuality).apply()
+        update(state.copy(configReady = true, highQuality = highQuality))
+        work { connect() }
+    }
+
+    private fun token(): String = prefs.getString("token", null) ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it.toInt() and 255) }.also { prefs.edit().putString("token", it).commit() }
+
+    private suspend fun connect() {
+        retryJob?.cancel()
+        registrationTimeout?.cancel()
         generation++
         val epoch = generation
         socket?.cancel()
         socket = null
-        val endpoint = prefs.getString("endpoint", "") ?: ""
-        if (!Security.validEndpoint(endpoint)) return
-        update(state.copy(online = false, message = "Подключение к серверу…"))
-        socket = http.newWebSocket(Request.Builder().url(endpoint).build(), object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                main.post { if (epoch == generation) webSocket.send(JSONObject().put("type", "register").put("token", token()).toString()) }
+        http?.dispatcher?.executorService?.shutdown()
+        http?.connectionPool?.evictAll()
+        val endpoints = config() ?: return
+        val bundle = db { it.publicBundle() }
+        http = endpoints.http()
+        update(state.copy(online = false, message = "Подключение с проверкой сертификата…"))
+        socket = http!!.newWebSocket(Request.Builder().url(endpoints.apiUrl).build(), object : WebSocketListener() {
+            override fun onOpen(ws: WebSocket, response: Response) {
+                scope.launch { if (epoch == generation) {
+                    ws.send(JSONObject().put("type", "register").put("token", token()).put("bundle", bundle).toString())
+                    registrationTimeout = scope.launch { delay(15_000); if (!state.online) disconnected(epoch) }
+                } }
             }
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                main.post {
-                    if (epoch == generation) runCatching { receive(JSONObject(text)) }
-                        .onFailure { finish("Ошибка протокола соединения") }
+            override fun onMessage(ws: WebSocket, text: String) {
+                scope.launch {
+                    if (epoch != generation) return@launch
+                    val message = runCatching { JSONObject(text) }.getOrNull() ?: return@launch
+                    val requestId = message.optString("requestId")
+                    if (requestId.isNotEmpty() && message.optString("type") == "bundle") {
+                        val pending = lookups.remove(requestId)
+                        val bundle = message.optJSONObject("bundle")
+                        if (bundle != null) pending?.complete(bundle)
+                        else pending?.completeExceptionally(IllegalStateException("Invalid bundle"))
+                    } else if (requestId.isNotEmpty() && message.optString("type") == "error") {
+                        lookups.remove(requestId)?.completeExceptionally(IllegalStateException(message.optString("code")))
+                    } else if (!incoming.trySend(epoch to message).isSuccess) disconnected(epoch)
                 }
             }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                main.post { if (epoch == generation) disconnected() }
-            }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                main.post { if (epoch == generation) disconnected() }
-            }
+            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) { scope.launch { disconnected(epoch) } }
+            override fun onClosed(ws: WebSocket, code: Int, reason: String) { scope.launch { disconnected(epoch) } }
         })
     }
 
-    private fun disconnected() {
-        if (state.phase != Phase.IDLE) finish("Соединение с сервером потеряно")
-        update(state.copy(online = false, message = "Сервер недоступен. Повторное подключение…"))
-        main.removeCallbacks(reconnect)
-        main.postDelayed(reconnect, (1L shl retry.coerceAtMost(5)) * 1000)
-        retry++
+    private suspend fun disconnected(epoch: Int) {
+        if (epoch != generation) return
+        generation++
+        registrationTimeout?.cancel()
+        socket?.cancel(); socket = null
+        lookups.values.forEach { it.completeExceptionally(IllegalStateException("Offline")) }; lookups.clear()
+        if (state.phase != Phase.IDLE) finish("Соединение потеряно. Звонок завершён", notifyServer = false)
+        update(state.copy(online = false, message = "Сервер недоступен или сертификат не соответствует pin"))
+        retryJob?.cancel()
+        retryJob = scope.launch { delay(5_000); connect() }
     }
 
-    private fun send(type: String, extra: JSONObject = JSONObject()): Boolean {
-        extra.put("type", type)
-        if (callId.isNotEmpty()) extra.put("callId", callId)
-        return socket?.send(extra.toString()) == true
+    private fun send(type: String, extra: JSONObject = JSONObject()): Boolean =
+        socket?.send(extra.put("type", type).toString()) == true
+
+    private suspend fun lookup(number: String, consumePreKey: Boolean = true): JSONObject {
+        require(number.matches(Regex("[0-9]{8}")) && number != state.number && state.online)
+        val id = UUID.randomUUID().toString()
+        val pending = CompletableDeferred<JSONObject>()
+        lookups[id] = pending
+        try {
+            check(send("lookup", JSONObject().put("to", number).put("requestId", id).put("consumePreKey", consumePreKey)))
+            return withTimeout(15_000) { pending.await() }
+        } finally { lookups.remove(id) }
+    }
+
+    suspend fun inspectPeer(number: String): String {
+        val bundle = lookup(number, consumePreKey = false)
+        return db { it.rememberPeer(number, bundle); it.safetyCode(number) }
+    }
+
+    suspend fun verified(number: String): Boolean = db { it.isVerified(number) }
+    suspend fun verifyPeer(number: String) = db { it.verifyPeer(number) }
+    suspend fun messages(number: String, before: Long? = null): List<ChatMessage> = db { it.messages(number, before, 40) }
+
+    private suspend fun preparePeer(number: String) {
+        val exists = db { it.hasSession(number) }
+        val bundle = lookup(number, consumePreKey = !exists)
+        db {
+            it.rememberPeer(number, bundle)
+            check(it.isVerified(number)) { "SAS must be verified" }
+            if (!it.hasSession(number)) it.establishSession(number, bundle)
+        }
+    }
+
+    suspend fun sendChat(number: String, text: String) {
+        require(text.isNotBlank() && text.toByteArray().size <= 4_096)
+        preparePeer(number)
+        val id = UUID.randomUUID().toString()
+        val payload = JSONObject().put("kind", "chat").put("id", id).put("text", text).toString().toByteArray()
+        val envelope = db { it.encryptAndQueue(number, id, payload, text) }
+        chatEnvelopeIds.add(id)
+        check(send("envelope", JSONObject().put("to", number).put("id", id).put("cipherType", envelope.cipherType).put("body", envelope.body)))
+        update(state.copy(chatVersion = state.chatVersion + 1))
+    }
+
+    private suspend fun receive(message: JSONObject) {
+        when (message.getString("type")) {
+            "registered" -> {
+                registrationTimeout?.cancel()
+                val number = message.getString("number")
+                require(number.matches(Regex("[0-9]{8}")))
+                db { it.setLocalNumber(number) }
+                prefs.edit().putString("number", number).apply()
+                update(state.copy(number = number, online = true, message = "LiveKit · Signal Protocol · TLS pinning"))
+                val outbox = db { it.outbox() }
+                chatEnvelopeIds.addAll(outbox.map { it.id })
+                outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
+            }
+            "bundle" -> lookups.remove(message.getString("requestId"))?.complete(message.getJSONObject("bundle"))
+            "envelope" -> {
+                val from = message.getString("from")
+                val id = message.getString("id")
+                if (!db { it.isVerified(from) }) {
+                    update(state.copy(message = "Сообщение от $from отклонено: сначала сверьте SAS")); return
+                }
+                val payload = db { it.decryptAndStore(from, message.getInt("cipherType"), message.getString("body"), id) } ?: return
+                when (payload.getString("kind")) {
+                    "chat" -> {
+                        require(payload.getString("id") == id)
+                        val text = payload.getString("text")
+                        require(text.toByteArray().size <= 4_096)
+                        update(state.copy(chatVersion = state.chatVersion + 1, message = "Новое зашифрованное сообщение от $from"))
+                    }
+                    "call-key" -> {
+                        require(payload.getString("owner") == from)
+                        val key = android.util.Base64.decode(payload.getString("key"), android.util.Base64.NO_WRAP)
+                        require(key.size == 32)
+                        val roster = strings(payload.getJSONArray("members"))
+                        require(roster.size in 2..8 && roster.distinct().size == roster.size && state.number in roster && from in roster)
+                        val idCall = payload.getString("callId")
+                        if (pendingKeys.size >= 8) pendingKeys.clear()
+                        pendingKeys[idCall] = payload
+                        if (callId == idCall) adoptKey()
+                    }
+                }
+                send("keys", JSONObject().put("bundle", db { it.publicBundle() }))
+            }
+            "sent" -> {
+                val id = message.getString("id")
+                if (!chatEnvelopeIds.remove(id)) return
+                db { it.removeOutbox(id); it.updateMessageStatus(id, "sent") }
+                update(state.copy(chatVersion = state.chatVersion + 1))
+            }
+            "call_created" -> {
+                if (state.phase != Phase.OUTGOING) return
+                require(message.getString("owner") == state.number)
+                require(strings(message.getJSONArray("members")).toSet() == state.members.toSet())
+                setupCall(message)
+                roomKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
+                val payload = JSONObject().put("kind", "call-key").put("callId", callId).put("room", callRoom)
+                    .put("owner", owner).put("members", JSONArray(state.members))
+                    .put("key", android.util.Base64.encodeToString(roomKey, android.util.Base64.NO_WRAP))
+                for (number in state.members.filter { it != state.number }) {
+                    preparePeer(number)
+                    val id = UUID.randomUUID().toString()
+                    val encrypted = db { it.encrypt(number, payload.toString().toByteArray()) }
+                    check(send("envelope", JSONObject().put("to", number).put("id", id).put("cipherType", encrypted.cipherType).put("body", encrypted.body)))
+                }
+                check(send("join_call", JSONObject().put("callId", callId)))
+                update(state.copy(phase = Phase.CONNECTING, message = "Соединяем зашифрованную группу…"))
+            }
+            "incoming" -> {
+                if (state.phase != Phase.IDLE) return
+                setupCall(message)
+                update(state.copy(phase = Phase.INCOMING, peer = owner, message = "Входящий групповой звонок"))
+                adoptKey()
+            }
+            "room_grant" -> {
+                require(message.getString("callId") == callId && message.getString("room") == callRoom)
+                require(strings(message.getJSONArray("members")).toSet() == state.members.toSet())
+                require(message.getString("owner") == owner)
+                val endpoints = config() ?: error("No endpoints")
+                require(message.getString("url").trimEnd('/') == endpoints.mediaUrl.trimEnd('/'))
+                val key = roomKey ?: error("Missing E2EE key")
+                val epochCall = callId
+                engine = LiveCallEngine(this, scope) { event -> work { if (callId == epochCall && epochCall.isNotEmpty()) mediaEvent(event) } }
+                update(state.copy(phase = Phase.CONNECTING, message = "LiveKit · устанавливаем E2EE…"))
+                engine!!.connect(endpoints.mediaUrl, message.getString("token"), key, http!!, state.highQuality)
+            }
+            "ended" -> if (message.optString("callId") == callId) finish("Групповой звонок завершён", false)
+            "error" -> {
+                val request = message.optString("requestId")
+                lookups.remove(request)?.completeExceptionally(IllegalStateException(message.optString("code")))
+                val id = message.optString("id")
+                if (id in chatEnvelopeIds) {
+                    db { it.updateMessageStatus(id, "failed") }
+                    update(state.copy(chatVersion = state.chatVersion + 1, message = "Сообщение не отправлено: адресат недоступен"))
+                }
+                if (message.optString("code") == "replaced") {
+                    generation++; socket?.cancel(); socket = null
+                    finish("Учётная запись открыта на другом устройстве", false)
+                    update(state.copy(online = false))
+                } else if (request.isEmpty() && id.isEmpty() && state.phase != Phase.IDLE) finish("Звонок невозможен: участник недоступен или LiveKit не настроен")
+            }
+        }
+    }
+
+    private fun strings(array: JSONArray): List<String> = (0 until array.length()).map { array.getString(it) }
+
+    private fun setupCall(message: JSONObject) {
+        callId = message.getString("callId")
+        callRoom = message.getString("room")
+        owner = message.getString("owner")
+        val members = strings(message.getJSONArray("members"))
+        require(members.size in 2..8 && members.distinct().size == members.size && state.number in members && owner in members)
+        update(state.copy(members = members))
+        callTimeout?.cancel()
+        callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Нет ответа или соединения. Звонок завершён") }
+    }
+
+    private fun adoptKey() {
+        val payload = pendingKeys[callId] ?: return
+        require(payload.getString("room") == callRoom && payload.getString("owner") == owner)
+        require(strings(payload.getJSONArray("members")).toSet() == state.members.toSet())
+        roomKey = android.util.Base64.decode(payload.getString("key"), android.util.Base64.NO_WRAP)
+        pendingKeys.remove(callId)
+    }
+
+    private suspend fun mediaEvent(event: MediaEvent) {
+        when (event) {
+            is MediaEvent.Connected -> {
+                callTimeout?.cancel()
+                update(state.copy(phase = Phase.CONNECTED, connectedAt = SystemClock.elapsedRealtime(), message = "Голос E2EE · ${if (state.highQuality) "Opus HQ" else "Opus речь"}"))
+            }
+            is MediaEvent.Participants -> {
+                require(event.numbers.all { it in state.members }) { "Unexpected room participant" }
+                update(state.copy(participants = event.numbers))
+            }
+            is MediaEvent.Disconnected -> if (state.phase != Phase.IDLE) finish("Медиасоединение потеряно. Звонок завершён")
+            is MediaEvent.Failed -> finish("Ошибка E2EE или медиасервера. Звонок завершён")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             "dial", "accept" -> {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    stopSelf(); return START_NOT_STICKY
-                }
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { stopSelf(); return START_NOT_STICKY }
                 if (!foreground) {
-                    if (Build.VERSION.SDK_INT >= 30) {
-                        startForeground(1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-                    } else startForeground(1, notification())
+                    if (Build.VERSION.SDK_INT >= 30) startForeground(1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                    else startForeground(1, notification())
                     foreground = true
                 }
-                if (intent.action == "dial" && state.phase == Phase.IDLE) {
-                    val number = intent.getStringExtra("number") ?: ""
-                    if (!state.online || !number.matches(Regex("[0-9]{8}"))) {
-                        finish("Проверьте номер и подключение")
-                    } else {
-                        caller = true
-                        update(state.copy(phase = Phase.OUTGOING, peer = number, message = "Вызываем…"))
-                        if (!send("call", JSONObject().put("to", number))) finish("Нет соединения с сервером")
-                    }
-                } else if (intent.action == "accept" && state.phase == Phase.INCOMING) {
-                    caller = false
-                    update(state.copy(phase = Phase.CONNECTING, message = "Соединяем…"))
-                    if (!send("accept")) finish("Нет соединения с сервером")
-                } else if (state.phase == Phase.IDLE) finish("Готов к звонку")
+                work {
+                    if (intent.action == "dial" && state.phase == Phase.IDLE) {
+                        val members = intent.getStringArrayListExtra("members")?.distinct() ?: emptyList()
+                        require(members.size in 1..7 && state.number !in members && state.online)
+                        update(state.copy(phase = Phase.OUTGOING, peer = members.joinToString(", "), members = listOf(state.number) + members, message = "Создаём группу…"))
+                        withTimeout(20_000) { for (number in members) preparePeer(number) }
+                        acquireWakeLock()
+                        check(send("create_call", JSONObject().put("members", JSONArray(members))))
+                        callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Не удалось установить звонок") }
+                    } else if (intent.action == "accept" && state.phase == Phase.INCOMING) {
+                        require(state.members.filter { it != state.number }.all { verified(it) }) { "Verify SAS for all participants" }
+                        withTimeout(10_000) { while (roomKey == null) { adoptKey(); delay(100) } }
+                        acquireWakeLock()
+                        update(state.copy(phase = Phase.CONNECTING, message = "Соединяем…"))
+                        check(send("join_call", JSONObject().put("callId", callId)))
+                    } else if (state.phase == Phase.IDLE) finish("Готов к звонку")
+                }
             }
             "mute" -> toggleMute()
             "hangup" -> hangup()
@@ -159,265 +392,77 @@ class CallService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun receive(message: JSONObject) {
-        when (message.getString("type")) {
-            "registered" -> {
-                val servers = message.getJSONArray("iceServers")
-                iceServers = (0 until servers.length()).map { i ->
-                    val server = servers.getJSONObject(i)
-                    val urls = server.getJSONArray("urls")
-                    PeerConnection.IceServer.builder((0 until urls.length()).map { urls.getString(it) })
-                        .setUsername(server.optString("username"))
-                        .setPassword(server.optString("credential")).createIceServer()
-                }
-                relayOnly = message.optBoolean("relayOnly")
-                val number = message.getString("number")
-                prefs.edit().putString("number", number).apply()
-                retry = 0
-                update(state.copy(number = number, online = true, message = "Готов к звонку"))
-            }
-            "ringing" -> {
-                if (state.phase != Phase.OUTGOING) return
-                callId = message.getString("callId")
-                update(state.copy(message = "Ждём ответа…"))
-            }
-            "incoming" -> {
-                callId = message.getString("callId")
-                caller = false
-                update(state.copy(phase = Phase.INCOMING, peer = message.getString("peer"), message = "Входящий звонок"))
-            }
-            "accepted" -> {
-                if (message.optString("callId") != callId) return
-                update(state.copy(phase = Phase.CONNECTING, message = "Соединяем…"))
-                main.postDelayed(callTimeout, 30_000)
-                createPeer()
-                if (caller) peerConnection?.createOffer(descriptionObserver(), MediaConstraints())
-            }
-            "signal" -> {
-                if (message.optString("callId") != callId || peerConnection == null) return
-                if (message.has("description")) {
-                    val description = message.getJSONObject("description")
-                    val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(description.getString("type")), description.getString("sdp"))
-                    val id = callId
-                    peerConnection?.setRemoteDescription(object : SdpAdapter() {
-                        override fun onSetSuccess() { main.post {
-                            if (id != callId) return@post
-                            pendingIce.forEach { peerConnection?.addIceCandidate(it) }
-                            pendingIce.clear()
-                            updateSafetyCode()
-                            if (sdp.type == SessionDescription.Type.OFFER) peerConnection?.createAnswer(descriptionObserver(), MediaConstraints())
-                        } }
-                        override fun onSetFailure(error: String) { failFor(id) }
-                    }, sdp)
-                } else if (message.has("candidate")) {
-                    val c = message.getJSONObject("candidate")
-                    val candidate = IceCandidate(c.optString("sdpMid", "0"), c.getInt("sdpMLineIndex"), c.getString("candidate"))
-                    if (peerConnection?.remoteDescription == null) pendingIce.add(candidate)
-                    else peerConnection?.addIceCandidate(candidate)
-                }
-            }
-            "ended" -> if (message.optString("callId") == callId) finish(when (message.optString("reason")) {
-                "rejected" -> "Звонок отклонён"
-                "timeout" -> "Нет ответа"
-                "disconnected" -> "Собеседник отключился"
-                else -> "Звонок завершён"
-            })
-            "error" -> {
-                val code = message.optString("code")
-                if (code == "replaced") {
-                    generation++
-                    socket?.cancel()
-                    socket = null
-                    finish("Эта учётная запись открыта на другом устройстве")
-                    update(state.copy(online = false))
-                } else if (state.phase == Phase.OUTGOING || state.phase == Phase.CONNECTING) {
-                    finish(when (code) {
-                        "offline" -> "Друг сейчас не в сети"
-                        "busy" -> "Номер занят"
-                        "self" -> "Нельзя позвонить себе"
-                        else -> "Не удалось начать звонок"
-                    })
-                }
-            }
-        }
-    }
-
     @SuppressLint("WakelockTimeout")
-    private fun createPeer() {
-        oldMode = audio.mode
-        @Suppress("DEPRECATION")
-        oldSpeaker = audio.isSpeakerphoneOn
-        audio.mode = AudioManager.MODE_IN_COMMUNICATION
-        focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            .setOnAudioFocusChangeListener { change ->
-                if (change == AudioManager.AUDIOFOCUS_LOSS) main.post { hangup() }
-            }.build().also { audio.requestAudioFocus(it) }
-        wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Line:call")
-            .apply { acquire() } // Released by finish/onDestroy; no arbitrary call duration limit.
-        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(this).createInitializationOptions())
-        device = JavaAudioDeviceModule.builder(this).createAudioDeviceModule()
-        factory = PeerConnectionFactory.builder().setAudioDeviceModule(device).createPeerConnectionFactory()
-        val config = PeerConnection.RTCConfiguration(iceServers).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            if (relayOnly) iceTransportsType = PeerConnection.IceTransportsType.RELAY
-        }
-        val id = callId
-        peerConnection = factory?.createPeerConnection(config, object : PeerConnection.Observer {
-            override fun onIceCandidate(candidate: IceCandidate) { main.post {
-                if (id == callId) send("signal", JSONObject().put("candidate", JSONObject()
-                    .put("sdpMid", candidate.sdpMid).put("sdpMLineIndex", candidate.sdpMLineIndex).put("candidate", candidate.sdp)))
-            } }
-            override fun onConnectionChange(connection: PeerConnection.PeerConnectionState) { main.post {
-                if (id != callId) return@post
-                when (connection) {
-                    PeerConnection.PeerConnectionState.CONNECTED -> {
-                        main.removeCallbacks(callTimeout)
-                        update(state.copy(phase = Phase.CONNECTED,
-                            connectedAt = state.connectedAt.takeIf { it > 0 } ?: SystemClock.elapsedRealtime(), message = "Звонок зашифрован"))
-                        updateSafetyCode()
-                    }
-                    PeerConnection.PeerConnectionState.DISCONNECTED -> {
-                        update(state.copy(message = "Восстанавливаем связь…"))
-                        main.removeCallbacks(callTimeout)
-                        main.postDelayed(callTimeout, 20_000)
-                    }
-                    PeerConnection.PeerConnectionState.FAILED -> finish("Не удалось соединиться. Проверьте TURN и сеть")
-                    else -> Unit
-                }
-            } }
-            override fun onSignalingChange(value: PeerConnection.SignalingState) = Unit
-            override fun onIceConnectionChange(value: PeerConnection.IceConnectionState) = Unit
-            override fun onIceConnectionReceivingChange(value: Boolean) = Unit
-            override fun onIceGatheringChange(value: PeerConnection.IceGatheringState) = Unit
-            override fun onIceCandidatesRemoved(value: Array<out IceCandidate>) = Unit
-            override fun onAddStream(value: MediaStream) = Unit
-            override fun onRemoveStream(value: MediaStream) = Unit
-            override fun onDataChannel(value: DataChannel) = Unit
-            override fun onRenegotiationNeeded() = Unit
-        }) ?: error("Cannot create peer connection")
-        source = factory?.createAudioSource(MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-        })
-        track = factory?.createAudioTrack("voice", source)
-        peerConnection?.addTrack(track, listOf("line"))?.let { sender ->
-            val parameters = sender.parameters
-            parameters.encodings.forEach { it.maxBitrateBps = 32_000 }
-            sender.setParameters(parameters)
-        }
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Line:group-call")
+            .apply { acquire() }
     }
 
-    private fun descriptionObserver(): SdpObserver {
-        val id = callId
-        return object : SdpAdapter() {
-            override fun onCreateSuccess(sdp: SessionDescription) { main.post {
-                if (id != callId) return@post
-                peerConnection?.setLocalDescription(object : SdpAdapter() {
-                    override fun onSetSuccess() { main.post {
-                        if (id != callId) return@post
-                        send("signal", JSONObject().put("description", JSONObject()
-                            .put("type", sdp.type.canonicalForm()).put("sdp", sdp.description)))
-                        updateSafetyCode()
-                    } }
-                    override fun onSetFailure(error: String) { failFor(id) }
-                }, sdp)
-            } }
-            override fun onCreateFailure(error: String) { failFor(id) }
-        }
-    }
+    fun toggleMute() { work {
+        if (state.phase != Phase.CONNECTED) return@work
+        val muted = !state.muted
+        engine?.setMuted(muted)
+        update(state.copy(muted = muted))
+    } }
 
-    private fun failFor(id: String) { main.post { if (id == callId) finish("Ошибка защищённого соединения") } }
-
-    private fun updateSafetyCode() {
-        val local = peerConnection?.localDescription?.description ?: return
-        val remote = peerConnection?.remoteDescription?.description ?: return
-        update(state.copy(safetyCode = Security.safetyCode(local, remote)))
-    }
-
-    fun toggleMute() {
-        if (state.phase != Phase.CONNECTED && state.phase != Phase.CONNECTING) return
-        val mute = !state.muted
-        device?.setMicrophoneMute(mute)
-        track?.setEnabled(!mute)
-        update(state.copy(muted = mute))
-    }
-
-    @Suppress("DEPRECATION")
     fun toggleSpeaker() {
-        if (peerConnection == null) return
+        if (state.phase != Phase.CONNECTED) return
         val enabled = !state.speaker
-        audio.isSpeakerphoneOn = enabled
+        engine?.setSpeaker(enabled)
         update(state.copy(speaker = enabled))
     }
 
-    fun hangup() {
+    fun hangup() { work {
         val pending = state.phase == Phase.OUTGOING && callId.isEmpty()
-        if (state.phase == Phase.INCOMING && callId.isNotEmpty()) send("reject")
         finish("Звонок завершён")
-        // Disconnect cancels a request even if its server-assigned call ID has not arrived.
         if (pending) connect()
-    }
+    } }
 
-    @Suppress("DEPRECATION")
-    private fun finish(message: String) {
-        main.removeCallbacks(callTimeout)
-        if (callId.isNotEmpty()) send("hangup")
-        callId = ""
-        peerConnection?.close()
-        peerConnection?.dispose(); peerConnection = null
-        track?.dispose(); track = null
-        source?.dispose(); source = null
-        factory?.dispose(); factory = null
-        device?.release(); device = null
-        pendingIce.clear()
+    private suspend fun finish(message: String, notifyServer: Boolean = true) {
+        callTimeout?.cancel(); callTimeout = null
+        if (notifyServer && callId.isNotEmpty()) send(if (state.phase == Phase.INCOMING) "decline_call" else "leave_call", JSONObject().put("callId", callId))
+        callId = ""; callRoom = ""; owner = ""
+        roomKey?.fill(0); roomKey = null; pendingKeys.clear()
+        val oldEngine = engine; engine = null
+        update(state.copy(phase = Phase.IDLE, peer = "", members = emptyList(), participants = emptyList(),
+            muted = false, speaker = false, connectedAt = 0, safetyCode = "", message = message))
+        oldEngine?.disconnect()
         if (wakeLock?.isHeld == true) wakeLock?.release()
         wakeLock = null
-        focus?.let {
-            audio.abandonAudioFocusRequest(it)
-            audio.isSpeakerphoneOn = oldSpeaker
-            audio.mode = oldMode
-        }
-        focus = null
         foreground = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
-        update(state.copy(phase = Phase.IDLE, peer = "", muted = false, speaker = false,
-            safetyCode = "", connectedAt = 0, message = message))
     }
 
     private fun notification(): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         fun action(name: String, code: Int) = PendingIntent.getService(this, code,
             Intent(this, CallService::class.java).setAction(name), PendingIntent.FLAG_IMMUTABLE)
-        return Notification.Builder(this, "calls").setSmallIcon(app.line.R.drawable.ic_line)
-            .setContentTitle("Line · ${state.peer.ifEmpty { "Голосовой звонок" }}")
+        return Notification.Builder(this, "calls").setSmallIcon(R.drawable.ic_line)
+            .setContentTitle("Line · групповой звонок")
             .setContentText(if (state.muted) "Микрофон выключен" else state.message)
-            .setContentIntent(open).setOngoing(true).setCategory(Notification.CATEGORY_CALL)
-            .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .addAction(Notification.Action.Builder(null, if (state.muted) "Включить микрофон" else "Без звука", action("mute", 1)).build())
-            .addAction(Notification.Action.Builder(null, "Завершить", action("hangup", 2)).build())
-            .build()
+            .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+            .setOngoing(true).setCategory(Notification.CATEGORY_CALL).setVisibility(Notification.VISIBILITY_PRIVATE)
+            .addAction(Notification.Action.Builder(null, "Микрофон", action("mute", 1)).build())
+            .addAction(Notification.Action.Builder(null, "Завершить", action("hangup", 2)).build()).build()
     }
 
     override fun onDestroy() {
         generation++
-        main.removeCallbacksAndMessages(null)
-        socket?.cancel()
-        socket = null
-        finish("Звонок завершён")
-        http.dispatcher.executorService.shutdown()
-        http.connectionPool.evictAll()
+        incoming.close()
+        socket?.cancel(); socket = null
+        if (wakeLock?.isHeld == true) wakeLock?.release()
+        wakeLock = null
+        runCatching { network.unregisterNetworkCallback(networkCallback) }
+        roomKey?.fill(0); roomKey = null
+        val oldEngine = engine
+        engine = null
+        scope.launch {
+            try { oldEngine?.disconnect(); if (secure.isCompleted && !secure.isCancelled) withContext(Dispatchers.IO) { secure.await().close() } }
+            finally { scope.cancel() }
+        }
+        http?.dispatcher?.executorService?.shutdown(); http?.connectionPool?.evictAll()
         listeners.clear()
         super.onDestroy()
-    }
-
-    private open class SdpAdapter : SdpObserver {
-        override fun onCreateSuccess(sdp: SessionDescription) = Unit
-        override fun onSetSuccess() = Unit
-        override fun onCreateFailure(error: String) = Unit
-        override fun onSetFailure(error: String) = Unit
     }
 }

@@ -1,30 +1,76 @@
-# RTC signaling server
+# LINE signaling and encrypted relay
 
-Node 24 ESM service. It provides the WebSocket signaling/control plane only; audio/video is peer-to-peer WebRTC, with TURN relay available when configured. It does not record or log installation tokens, SDP, or ICE candidates.
+Node 24 service for registration, public Signal key-bundle discovery, transient encrypted-message delivery, and fixed-roster LiveKit audio rooms. The server never receives private identity/session keys, plaintext chat, SDP, or media. It does retain public bundles and account-to-number mappings, and transiently processes routing metadata; it is not anonymous or zero-metadata.
 
-## Run locally
+## Run and test
 
 ```sh
 cd server
-npm install
+npm ci
 npm test
 npm start
 ```
 
-The service listens on `0.0.0.0:3000`. `GET /health` returns `{"status":"ok"}`; the only WebSocket endpoint is `/signal`. Put it behind a TLS reverse proxy in deployment; this server itself serves plain HTTP and WebSocket only.
+The service listens on `0.0.0.0:3000`. `GET /` and `/health` return only `{"status":"ok"}`. WebSocket signaling is served at `/signal`; terminate TLS at a trusted reverse proxy and use `wss://` from clients.
 
-Configuration is via environment variables:
+## Configuration
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `DATA_FILE` | `server/data/identities.json` | Persistent JSON mapping of SHA-256 installation-token hashes to 8-digit numbers. Protect this file and back it up; raw tokens are not stored. |
-| `STUN_URLS` | `stun:stun.l.google.com:19302` | Comma-separated STUN URLs. |
-| `TURN_URLS` | unset | Comma-separated TURN URLs. |
-| `TURN_SECRET` | unset | Coturn REST shared secret; generates HMAC-SHA1 credentials with an expiry username. Requires `TURN_URLS`. |
-| `TURN_CREDENTIAL_TTL_SECONDS` | `86400` | REST credential lifetime, from 60 to 604800 seconds. |
-| `TURN_USERNAME`, `TURN_PASSWORD` | unset | Static TURN credential fallback; configure both with `TURN_URLS`. Prefer `TURN_SECRET` for production. |
-| `RELAY_ONLY` | `false` | Set to literal `true` to return TURN servers only and fail startup unless TURN is configured. The client must also enforce `iceTransportPolicy: "relay"`. |
+| Variable | Meaning |
+| --- | --- |
+| `DATA_FILE` | Persistent versioned JSON store. Defaults to `server/data/identities.json`; contains SHA-256 installation-token hashes, 8-digit numbers, and public key bundles only. |
+| `PORT`, `HOST` | HTTP listen port and interface; defaults to `3000` and `0.0.0.0`. |
+| `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. |
+| `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Server-only LiveKit credentials. Keep the secret off clients. If any media setting is missing or invalid, registration and messaging still work but joining returns `media_not_configured`. |
 
-Registration allocates a random 8-digit number, persisted with the token hash; duplicate numbers are checked before assignment. The single-process JSON store is suitable for a small deployment, not concurrent replicas. Limits are 1,000 connected sockets, 100,000 identities, 30 registration attempts per source IP per minute, 40 messages per connection per second, 64 KiB per WebSocket message, and a 10-second registration deadline. Calls are one-at-a-time per connected identity and unanswered calls expire after 45 seconds. These in-memory limits and call state reset on restart; deploy one signaling instance or add coordinated storage/rate limits before scaling horizontally. Source IP comes from the TCP peer, not forwarded headers; configure proxy-level rate limits as appropriate.
+Room access tokens are signed by `livekit-server-sdk` 2.19.1 with a 120-second TTL. Each grant is restricted to one roster room, allows microphone publishing and subscription, and disallows data publishing. LiveKit API secrets are never returned to clients. Chat and signaling work without LiveKit being configured; the backend will not issue placeholder media tokens.
 
-The server only routes validated signaling between members of an accepted call and retains no SDP/candidate data. This signaling design does not itself provide end-to-end encryption for signaling or guarantee private media: WebRTC uses DTLS-SRTP, while IP metadata is visible to peers and the signaling/TURN infrastructure. Use TLS for the signaling connection and trusted TURN infrastructure; do not describe the service as untrackable or anonymous.
+The JSON store is written by an atomic rename with mode `0600`. Version-1 stores containing `{ "version": 1, "identities": { "<token hash>": "<number>" } }` are accepted. The next successful registration with a public bundle writes version 2 and preserves that installation's existing number. The store is a single-process file; do not run multiple API replicas against it. Back up the file securely.
+
+## WebSocket protocol
+
+All messages are JSON text. Registration is required within 10 seconds. Maximum WebSocket message size is 64 KiB; requests are limited to 40 per socket per second. Store operations are serialized through a bounded queue. No client content or credentials are logged.
+
+### Register and publish keys
+
+```json
+{
+  "type": "register",
+  "token": "<64 lowercase hex characters>",
+  "bundle": {
+    "identityKey": "<base64>",
+    "registrationId": 123,
+    "signedPreKey": { "id": 1, "publicKey": "<base64>", "signature": "<base64>" },
+    "kyberPreKey": { "id": 2, "publicKey": "<base64>", "signature": "<base64>" },
+    "preKeys": [{ "id": 3, "publicKey": "<base64>" }]
+  }
+}
+```
+
+Success: `{ "type": "registered", "number": "12345678" }`. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
+
+### Encrypted messages
+
+```json
+{ "type": "envelope", "to": "12345678", "id": "550e8400-e29b-41d4-a716-446655440000", "cipherType": 2, "body": "<base64 ciphertext>" }
+```
+
+Only ciphertext bodies of up to 24 KiB decoded are accepted. An online recipient receives `{ "type": "envelope", "from": "87654321", "id": "550e8400-e29b-41d4-a716-446655440000", "cipherType": 2, "body": "<base64 ciphertext>" }`; the sender receives `{ "type": "sent", "id": "550e8400-e29b-41d4-a716-446655440000" }`. An offline target returns `{ "type": "error", "code": "offline", "id": "550e8400-e29b-41d4-a716-446655440000" }` with no persistence or offline queue. Sender/id duplicates are transiently deduplicated in bounded memory; they are never stored across restart. Delivery acknowledgements confirm relay only, not recipient persistence or display.
+
+### Fixed-roster group audio calls
+
+```json
+{ "type": "create_call", "members": ["12345678", "87654321"] }
+```
+
+One to seven distinct online numbers other than the caller are allowed, for a maximum room size of eight. All invitees must be online and not in another call. `call_created` goes to the owner and `incoming` to each invitee, each carrying the same `{ "callId": "550e8400-e29b-41d4-a716-446655440001", "room": "line-550e8400-e29b-41d4-a716-446655440001", "members": ["<owner>", "..."], "owner": "<owner>" }`. Rosters cannot change. Each member sends `{ "type": "join_call", "callId": "550e8400-e29b-41d4-a716-446655440001" }` and receives `room_grant` with that fixed roster, public LiveKit URL, and a short-lived room-scoped token. Outsiders cannot get a token. `leave_call`, `decline_call`, any participant disconnect, or a 45-second invite deadline ends the entire call and triggers best-effort LiveKit room deletion; a new call always gets a new UUID and room. The timeout is cleared only after every roster member requests a grant.
+
+An unset/invalid LiveKit configuration makes `join_call` return `media_not_configured`; token-service errors return `media_unavailable`. Network changes on clients should close their WebSocket promptly; dead transports are also detected by heartbeat.
+
+## Security boundaries
+
+- Chat E2EE is a client responsibility: clients must implement the Signal Protocol Double Ratchet, generate and keep private keys on-device, verify published key signatures, and use SAS verification. This service stores public bundles and forwards opaque ciphertext only; it cannot attest that client messages are actually encrypted.
+- Media encryption is also a client responsibility. LiveKit's room token does **not** enable E2EE by itself. Every client must configure LiveKit E2EE/Insertable Streams with a fresh call key held only by participants and verified key/SAS exchange. Do not enable recording, egress, or untrusted room agents if the privacy model forbids them.
+- WebRTC transport encryption alone is not end-to-end encryption through an SFU. LiveKit and TURN still observe connection/participant metadata and IP addresses; the signaling service sees installation numbers, call rosters, online status, and message-routing timing. The service is not untrackable and must not be described as hiding all metadata.
+- Use TLS for both API and LiveKit WebSocket endpoints. Mobile clients should pin SPKI public keys for each host with a staged backup pin and a tested rotation/release plan; do not pin short-lived leaf certificates without an overlap strategy. See [`deploy/README.md`](../deploy/README.md).
+
+The process defaults to a single Node instance with limits of 1,000 sockets, 100,000 identities, 30 registration attempts per source IP per minute, and a 1,000-operation persistence queue. In-memory calls, deduplication, and rate limits reset on restart. Scale-out requires coordinated identity storage, one-time-prekey consumption, call state, deduplication, and rate limits.

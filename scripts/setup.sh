@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-npm --prefix server ci
+(cd server && npm ci)
 bash scripts/setup-android.sh

@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if ! command -v java >/dev/null; then
-  echo 'Java 17 required. Install openjdk-17-jdk-headless or set JAVA_HOME.' >&2
+  echo 'Java 21 required. Install a JDK 21 or set JAVA_HOME.' >&2
   exit 1
 fi
 export ANDROID_HOME="${ANDROID_HOME:-$PWD/.android-sdk}"
@@ -14,7 +14,7 @@ if [[ ! -x "$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager" ]]; then
   rm -rf .tools/android-tools .tools/android-tools.zip
 fi
 yes | "$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager" --licenses >/dev/null || true
-"$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager" 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'
+"$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager" 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
 printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
 if [[ ! -f gradlew && ! -x .tools/gradle-8.13/bin/gradle ]]; then
   curl -fL https://services.gradle.org/distributions/gradle-8.13-bin.zip -o .tools/gradle.zip
