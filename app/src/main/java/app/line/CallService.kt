@@ -10,6 +10,12 @@ import android.net.*
 import android.os.*
 import app.line.crypto.ChatMessage
 import app.line.crypto.SecureStore
+import app.line.crypto.ActivityEntry
+import app.line.crypto.SearchPage
+import app.line.i18n.UiStrings
+import app.line.i18n.LocalePreferences
+import app.line.notifications.LineNotifications
+import app.line.notifications.FeedbackSounds
 import app.line.media.LiveCallEngine
 import app.line.media.MediaEvent
 import kotlinx.coroutines.*
@@ -40,6 +46,11 @@ class CallService : Service() {
     private var callId = ""
     private var callRoom = ""
     private var owner = ""
+    private var activityCallId = ""
+    private var incomingCall = false
+    private var uiVisible = false
+    private var visiblePeer: String? = null
+    private val alerts by lazy { LineNotifications(this) }
     private var roomKey: ByteArray? = null
     private val pendingKeys = mutableMapOf<String, JSONObject>()
     private var engine: LiveCallEngine? = null
@@ -86,6 +97,8 @@ class CallService : Service() {
     }
 
     override fun onBind(intent: Intent): IBinder = binder
+    fun setUiVisible(visible: Boolean, peer: String? = null) { uiVisible = visible; visiblePeer = if (visible) peer else null }
+    fun incomingCallMatches(id: String?): Boolean = id != null && id == callId && state.phase == Phase.INCOMING
     fun observe(listener: (CallState) -> Unit) { listeners.add(listener); listener(state) }
     fun removeObserver(listener: (CallState) -> Unit) { listeners.remove(listener) }
 
@@ -270,6 +283,11 @@ class CallService : Service() {
     suspend fun verifyPeer(number: String) = db { it.verifyPeer(number) }
     suspend fun messages(number: String, before: Long? = null): List<ChatMessage> = db { it.messages(number, before, 40) }
     suspend fun conversations(before: Long? = null): List<ChatMessage> = db { it.conversations(before, 40) }
+    suspend fun searchMessages(query: String, before: Long? = null): SearchPage = db { it.searchMessages(query, before, 40) }
+    suspend fun activities(before: Long? = null): List<ActivityEntry> = db { it.events(before, 40) }
+    suspend fun recentCalls(before: Long? = null): List<ActivityEntry> = db { it.recentCalls(before, 40) }
+    suspend fun readActivities() { db { it.markEventsRead() }; activityChanged() }
+    suspend fun clearActivities() { db { it.clearEvents() }; activityChanged() }
     suspend fun deleteMessage(id: String) { db { it.deleteMessage(id) }; chatEnvelopeIds.remove(id); update(state.copy(chatVersion = state.chatVersion + 1)) }
     suspend fun clearConversation(peer: String) { db { it.clearConversation(peer) }; update(state.copy(chatVersion = state.chatVersion + 1)) }
 
@@ -306,6 +324,7 @@ class CallService : Service() {
                 update(state.copy(number = number, online = true, mediaReady = message.optBoolean("mediaReady"),
                     callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
                     maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8), message = "В сети"))
+                activityChanged()
                 val outbox = db { it.outbox() }
                 chatEnvelopeIds.addAll(outbox.map { it.id })
                 if (state.chatEnabled) outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
@@ -329,6 +348,9 @@ class CallService : Service() {
                         val text = payload.getString("text")
                         require(text.toByteArray().size <= 4_096)
                         update(state.copy(chatVersion = state.chatVersion + 1, message = "Новое зашифрованное сообщение от $from"))
+                        db { it.recordEvent("message:$id", "message", "received", from) }
+                        activityChanged()
+                        if (!uiVisible || visiblePeer != from) alerts.showMessage(from, id)
                     }
                     "call-key" -> {
                         require(payload.getString("owner") == from)
@@ -348,6 +370,7 @@ class CallService : Service() {
                 val id = message.getString("id")
                 if (!chatEnvelopeIds.remove(id)) return
                 db { it.removeOutbox(id); it.updateMessageStatus(id, "sent") }
+                FeedbackSounds.sent(this)
                 update(state.copy(chatVersion = state.chatVersion + 1))
             }
             "call_created" -> {
@@ -355,6 +378,9 @@ class CallService : Service() {
                 require(message.getString("owner") == state.number)
                 require(strings(message.getJSONArray("members")).toSet() == state.members.toSet())
                 setupCall(message)
+                if (activityCallId.isEmpty()) activityCallId = "call:$callId"
+                incomingCall = false
+                recordCall("outgoing")
                 roomKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
                 val payload = JSONObject().put("kind", "call-key").put("callId", callId).put("room", callRoom)
                     .put("owner", owner).put("members", JSONArray(state.members))
@@ -371,7 +397,11 @@ class CallService : Service() {
             "incoming" -> {
                 if (state.phase != Phase.IDLE) return
                 setupCall(message)
+                activityCallId = "call:$callId"
+                incomingCall = true
                 update(state.copy(phase = Phase.INCOMING, peer = owner, message = "Входящий групповой звонок"))
+                recordCall("incoming")
+                alerts.showIncoming(callId, owner)
                 adoptKey()
             }
             "room_grant" -> {
@@ -386,7 +416,17 @@ class CallService : Service() {
                 update(state.copy(phase = Phase.CONNECTING, message = "LiveKit · устанавливаем E2EE…"))
                 engine!!.connect(endpoints.mediaUrl, message.getString("token"), key, http!!, state.highQuality)
             }
-            "ended" -> if (message.optString("callId") == callId) finish("Групповой звонок завершён", false)
+            "ended" -> if (message.optString("callId") == callId) {
+                val reason = message.optString("reason")
+                val outcome = when {
+                    state.connectedAt > 0 -> "completed"
+                    reason == "declined" -> "rejected"
+                    reason in setOf("timeout", "left", "hangup") && incomingCall -> "missed"
+                    reason in setOf("left", "hangup") -> "cancelled"
+                    else -> "failed"
+                }
+                finish("Групповой звонок завершён", false, outcome)
+            }
             "error" -> {
                 val request = message.optString("requestId")
                 lookups.remove(request)?.completeExceptionally(IllegalStateException(message.optString("code")))
@@ -414,7 +454,7 @@ class CallService : Service() {
         require(members.size in 2..8 && members.distinct().size == members.size && state.number in members && owner in members)
         update(state.copy(members = members))
         callTimeout?.cancel()
-        callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Нет ответа или соединения. Звонок завершён") }
+        callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Нет ответа или соединения. Звонок завершён", outcome = if (incomingCall && state.phase == Phase.INCOMING) "missed" else "failed") }
     }
 
     private fun adoptKey() {
@@ -430,6 +470,8 @@ class CallService : Service() {
             is MediaEvent.Connected -> {
                 callTimeout?.cancel()
                 update(state.copy(phase = Phase.CONNECTED, connectedAt = SystemClock.elapsedRealtime(), message = "Голос E2EE · ${if (state.highQuality) "Opus HQ" else "Opus речь"}"))
+                alerts.dismissIncoming()
+                recordCall("connected")
             }
             is MediaEvent.Participants -> {
                 require(event.numbers.all { it in state.members }) { "Unexpected room participant" }
@@ -454,11 +496,14 @@ class CallService : Service() {
                         val members = intent.getStringArrayListExtra("members")?.distinct() ?: emptyList()
                         require(members.size in 1 until state.maxParticipants && state.number !in members && state.online && state.mediaReady && state.callsEnabled)
                         update(state.copy(phase = Phase.OUTGOING, peer = members.joinToString(", "), members = listOf(state.number) + members, message = "Создаём группу…"))
+                        activityCallId = "call:${UUID.randomUUID()}"; incomingCall = false
+                        recordCall("outgoing")
                         withTimeout(20_000) { for (number in members) preparePeer(number) }
                         acquireWakeLock()
                         check(send("create_call", JSONObject().put("members", JSONArray(members))))
                         callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Не удалось установить звонок") }
                     } else if (intent.action == "accept" && state.phase == Phase.INCOMING) {
+                        alerts.dismissIncoming()
                         require(state.members.filter { it != state.number }.all { verified(it) }) { "Verify SAS for all participants" }
                         withTimeout(10_000) { while (roomKey == null) { adoptKey(); delay(100) } }
                         acquireWakeLock()
@@ -469,6 +514,7 @@ class CallService : Service() {
             }
             "mute" -> toggleMute()
             "hangup" -> hangup()
+            "decline_notification" -> if (intent.getStringExtra("callId") == callId && state.phase == Phase.INCOMING) hangup()
         }
         return START_NOT_STICKY
     }
@@ -496,12 +542,21 @@ class CallService : Service() {
 
     fun hangup() { work {
         val pending = state.phase == Phase.OUTGOING && callId.isEmpty()
-        finish("Звонок завершён")
+        finish("Звонок завершён", outcome = if (state.connectedAt > 0) "completed" else if (incomingCall) "rejected" else "cancelled")
         if (pending) connect()
     } }
 
-    private suspend fun finish(message: String, notifyServer: Boolean = true) {
+    private suspend fun finish(message: String, notifyServer: Boolean = true, outcome: String = "failed") {
         callTimeout?.cancel(); callTimeout = null
+        val hadCall = activityCallId.isNotEmpty()
+        val peer = state.members.firstOrNull { it != state.number } ?: state.peer
+        val eventId = activityCallId
+        if (hadCall) {
+            recordCall(if (state.connectedAt > 0) "completed" else outcome)
+            if (incomingCall && state.connectedAt == 0L && outcome == "missed") alerts.showMissed(peer, eventId)
+        }
+        alerts.dismissIncoming()
+        activityCallId = ""; incomingCall = false
         if (notifyServer && callId.isNotEmpty()) send(if (state.phase == Phase.INCOMING) "decline_call" else "leave_call", JSONObject().put("callId", callId))
         callId = ""; callRoom = ""; owner = ""
         roomKey?.fill(0); roomKey = null; pendingKeys.clear()
@@ -519,13 +574,27 @@ class CallService : Service() {
     private fun notification(): Notification {
         fun action(name: String, code: Int) = PendingIntent.getService(this, code,
             Intent(this, CallService::class.java).setAction(name), PendingIntent.FLAG_IMMUTABLE)
+        val language = LocalePreferences.wrap(this)
+        fun tr(value: String) = UiStrings.translate(language, value)
         return Notification.Builder(this, "calls").setSmallIcon(R.drawable.ic_line)
-            .setContentTitle("Line · групповой звонок")
-            .setContentText(if (state.muted) "Микрофон выключен" else if (state.phase == Phase.CONNECTED) "В звонке" else "Соединяем…")
+            .setContentTitle("Line · " + tr("Групповой звонок"))
+            .setContentText(tr(if (state.muted) "Микрофон выключен" else if (state.phase == Phase.CONNECTED) "В звонке" else "Соединяем…"))
             .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
             .setOngoing(true).setCategory(Notification.CATEGORY_CALL).setVisibility(Notification.VISIBILITY_PRIVATE)
-            .addAction(Notification.Action.Builder(null, "Микрофон", action("mute", 1)).build())
-            .addAction(Notification.Action.Builder(null, "Завершить", action("hangup", 2)).build()).build()
+            .addAction(Notification.Action.Builder(null, tr("Микрофон"), action("mute", 1)).build())
+            .addAction(Notification.Action.Builder(null, tr("Завершить"), action("hangup", 2)).build()).build()
+    }
+
+    private suspend fun activityChanged() {
+        val unread = db { it.unreadEventCount() }
+        update(state.copy(activityVersion = state.activityVersion + 1, unreadActivities = unread))
+    }
+
+    private suspend fun recordCall(status: String) {
+        if (activityCallId.isEmpty()) return
+        val peer = if (incomingCall) owner else state.members.firstOrNull { it != state.number } ?: state.peer
+        db { it.recordEvent(activityCallId, if (incomingCall) "call_incoming" else "call_outgoing", status, peer, state.members) }
+        activityChanged()
     }
 
     override fun onDestroy() {

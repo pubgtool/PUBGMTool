@@ -37,6 +37,7 @@ import java.nio.charset.StandardCharsets
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.util.Locale
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -52,6 +53,23 @@ data class ChatMessage(
     val status: String,
     val sequence: Long,
     val createdAt: Long,
+)
+
+data class ActivityEntry(
+    val id: String,
+    val kind: String,
+    val state: String,
+    val peer: String,
+    val members: List<String>,
+    val createdAt: Long,
+    val sequence: Long,
+    val read: Boolean,
+)
+
+data class SearchPage(
+    val items: List<ChatMessage>,
+    val nextCursor: Long?,
+    val hasMore: Boolean,
 )
 
 data class OutboxItem(
@@ -326,6 +344,7 @@ class SecureStore(context: Context) : AutoCloseable {
             } ?: return@transaction
 
             wipeMessageText(message.first, id)
+            db.delete("app_events", "id=? AND kind=?", arrayOf("message:$id", "message"))
             if (message.second) removeQueuedMessage(id)
         }
     }
@@ -358,6 +377,7 @@ class SecureStore(context: Context) : AutoCloseable {
             }
             db.delete("outbox", "peer=?", arrayOf(checkedPeer))
             queuedIds.forEach { deleteSecret("outbox-request", it) }
+            deleteMessageEvents(checkedPeer)
         }
     }
 
@@ -412,6 +432,166 @@ class SecureStore(context: Context) : AutoCloseable {
             }
         }
         return result
+    }
+
+    /** Searches decrypted text in memory only, scanning at most 200 encrypted messages per page. */
+    @Synchronized
+    fun searchMessages(
+        query: String,
+        before: Long? = null,
+        limit: Int = SEARCH_RESULT_PAGE_SIZE,
+        peer: String? = null,
+    ): SearchPage {
+        ensureOpen()
+        val normalizedQuery = query.trim()
+        require(normalizedQuery.length in MIN_SEARCH_QUERY_LENGTH..MAX_SEARCH_QUERY_LENGTH) {
+            "Search query must contain 2 to 128 characters"
+        }
+        val checkedPeer = peer?.let(::validNumber)
+        val resultLimit = limit.coerceIn(1, SEARCH_RESULT_PAGE_SIZE)
+        val baseClauses = ArrayList<String>(2)
+        val baseArgs = ArrayList<String>(1)
+        baseClauses += "deleted=0"
+        checkedPeer?.let {
+            baseClauses += "peer=?"
+            baseArgs += it
+        }
+        val clauses = baseClauses.toMutableList()
+        val args = baseArgs.toMutableList()
+        before?.let {
+            clauses += "sequence<?"
+            args += it.toString()
+        }
+        val selection = clauses.joinToString(" AND ")
+        val needle = normalizedQuery.lowercase(Locale.ROOT)
+        val matches = ArrayList<ChatMessage>(resultLimit)
+        var nextCursor: Long? = null
+        var scanned = 0
+
+        db.query(
+            "messages",
+            arrayOf("id", "peer", "text", "outgoing", "status", "sequence", "created_at"),
+            selection,
+            args.toTypedArray(),
+            null,
+            null,
+            "sequence DESC",
+            MAX_SEARCH_SCAN.toString(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                val messagePeer = cursor.getString(1)
+                val text = open("messages", scopedKey(messagePeer, id), cursor.getBlob(2))
+                    .toString(StandardCharsets.UTF_8)
+                val sequence = cursor.getLong(5)
+                nextCursor = sequence
+                scanned++
+                if (text.lowercase(Locale.ROOT).contains(needle)) {
+                    matches += ChatMessage(
+                        id, messagePeer, text, cursor.getInt(3) != 0, cursor.getString(4),
+                        sequence, cursor.getLong(6),
+                    )
+                    if (matches.size == resultLimit) break
+                }
+            }
+        }
+
+        val hasMore = if (scanned == 0 || nextCursor == null) {
+            false
+        } else {
+            val moreArgs = baseArgs.toMutableList().apply { add(nextCursor.toString()) }
+            val moreSelection = (baseClauses + "sequence<?").joinToString(" AND ")
+            db.query(
+                "messages", arrayOf("sequence"), moreSelection, moreArgs.toTypedArray(),
+                null, null, "sequence DESC", "1",
+            ).use { it.moveToFirst() }
+        }
+        return SearchPage(matches, nextCursor, hasMore)
+    }
+
+    /** Upserts event state while preserving its original timeline position and read status. */
+    @Synchronized
+    fun recordEvent(id: String, kind: String, state: String, peer: String, members: List<String> = emptyList()) {
+        ensureOpen()
+        require(id.isNotBlank() && id.length <= MAX_ACTIVITY_ID_LENGTH && id.none(Char::isISOControl)) {
+            "Invalid activity id"
+        }
+        require((kind == "message" && id.startsWith("message:")) ||
+            ((kind == "call_incoming" || kind == "call_outgoing") && id.startsWith("call:"))) {
+            "Activity id prefix does not match its kind"
+        }
+        require(state.isNotBlank() && state.length <= MAX_ACTIVITY_STATE_LENGTH && state.none(Char::isISOControl)) {
+            "Invalid activity state"
+        }
+        val checkedPeer = validNumber(peer)
+        require(members.size <= MAX_ACTIVITY_MEMBERS) { "Too many activity members" }
+        val checkedMembers = members.map(::validNumber)
+        val details = JSONObject().put("peer", checkedPeer).put("members", JSONArray(checkedMembers))
+
+        transaction {
+            val existing = db.query(
+                "app_events", arrayOf("kind", "details"), "id=?", arrayOf(id), null, null, null, "1",
+            ).use { cursor ->
+                if (!cursor.moveToFirst()) null else {
+                    cursor.getString(0) to JSONObject(
+                        open("app_events", id, cursor.getBlob(1)).toString(StandardCharsets.UTF_8),
+                    ).getString("peer")
+                }
+            }
+            check(existing == null || (existing.first == kind && existing.second == checkedPeer)) {
+                "Activity id is already assigned to another event"
+            }
+            val values = ContentValues().apply {
+                put("state", state)
+                put("details", seal("app_events", id, details.toString().toByteArray(StandardCharsets.UTF_8)))
+                if (existing == null) {
+                    put("id", id)
+                    put("kind", kind)
+                    put("created_at", System.currentTimeMillis())
+                    put("read", 0)
+                }
+            }
+            if (existing == null) {
+                db.insertOrThrow("app_events", null, values)
+            } else {
+                check(db.update("app_events", values, "id=?", arrayOf(id)) == 1) {
+                    "Activity event disappeared during update"
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    fun events(before: Long? = null, limit: Int = EVENT_PAGE_SIZE, kind: String? = null): List<ActivityEntry> {
+        ensureOpen()
+        return readEvents(before, limit, kind?.let { "kind=?" }, kind?.let { listOf(it) } ?: emptyList())
+    }
+
+    @Synchronized
+    fun recentCalls(before: Long? = null, limit: Int = EVENT_PAGE_SIZE): List<ActivityEntry> {
+        ensureOpen()
+        return readEvents(before, limit, "kind IN (?, ?)", listOf("call_incoming", "call_outgoing"))
+    }
+
+    @Synchronized
+    fun markEventsRead() {
+        ensureOpen()
+        db.update("app_events", ContentValues().apply { put("read", 1) }, null, null)
+    }
+
+    @Synchronized
+    fun unreadEventCount(): Int {
+        ensureOpen()
+        db.rawQuery("SELECT COUNT(*) FROM app_events WHERE read=0", null).use { cursor ->
+            check(cursor.moveToFirst()) { "Unable to count unread activity events" }
+            return cursor.getInt(0)
+        }
+    }
+
+    @Synchronized
+    fun clearEvents() {
+        ensureOpen()
+        db.delete("app_events", null, null)
     }
 
     /** Idempotent for an identical entry; ciphertext is retained unchanged for all retries. */
@@ -579,6 +759,64 @@ class SecureStore(context: Context) : AutoCloseable {
             put("created_at", System.currentTimeMillis())
         }
         db.insertOrThrow("messages", null, values)
+    }
+
+    private fun readEvents(
+        before: Long?,
+        limit: Int,
+        kindSelection: String?,
+        kindArgs: List<String>,
+    ): List<ActivityEntry> {
+        val clauses = ArrayList<String>(2)
+        val args = ArrayList<String>(kindArgs.size + 1)
+        if (kindSelection != null) {
+            clauses += kindSelection
+            args += kindArgs
+        }
+        before?.let {
+            clauses += "sequence<?"
+            args += it.toString()
+        }
+        val selection = clauses.takeIf { it.isNotEmpty() }?.joinToString(" AND ")
+        val result = ArrayList<ActivityEntry>()
+        db.query(
+            "app_events",
+            arrayOf("id", "kind", "state", "details", "created_at", "sequence", "read"),
+            selection,
+            args.takeIf { selection != null }?.toTypedArray(),
+            null,
+            null,
+            "sequence DESC",
+            limit.coerceIn(1, EVENT_PAGE_SIZE).toString(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                val details = JSONObject(
+                    open("app_events", id, cursor.getBlob(3)).toString(StandardCharsets.UTF_8),
+                )
+                val membersJson = details.getJSONArray("members")
+                val members = List(membersJson.length()) { index -> membersJson.getString(index) }
+                result += ActivityEntry(
+                    id, cursor.getString(1), cursor.getString(2), details.getString("peer"), members,
+                    cursor.getLong(4), cursor.getLong(5), cursor.getInt(6) != 0,
+                )
+            }
+        }
+        return result
+    }
+
+    private fun deleteMessageEvents(peer: String) {
+        val ids = ArrayList<String>()
+        db.query("app_events", arrayOf("id", "details"), "kind=?", arrayOf("message"), null, null, null).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                val details = JSONObject(
+                    open("app_events", id, cursor.getBlob(1)).toString(StandardCharsets.UTF_8),
+                )
+                if (details.getString("peer") == peer) ids += id
+            }
+        }
+        ids.forEach { db.delete("app_events", "id=?", arrayOf(it)) }
     }
 
     private fun wipeMessageText(peer: String, id: String) {
@@ -1004,23 +1242,44 @@ class SecureStore(context: Context) : AutoCloseable {
                 id TEXT PRIMARY KEY, peer TEXT NOT NULL, cipher_type INTEGER NOT NULL,
                 body BLOB NOT NULL, created_at INTEGER NOT NULL)""")
             database.execSQL("CREATE INDEX outbox_created_at ON outbox(created_at, id)")
+            createActivityTable(database)
         }
 
         override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            if (oldVersion == 1 && newVersion == 2) {
+            if (oldVersion == 1 && newVersion >= 2) {
                 database.execSQL("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
-            } else {
+            }
+            if (oldVersion <= 2 && newVersion >= 3) {
+                createActivityTable(database)
+            }
+            if (oldVersion !in 1..2 || newVersion != 3) {
                 throw SQLiteException("Unsupported secure-store schema upgrade $oldVersion -> $newVersion")
             }
+        }
+
+        private fun createActivityTable(database: SQLiteDatabase) {
+            database.execSQL("""CREATE TABLE IF NOT EXISTS app_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+                state TEXT NOT NULL, details BLOB NOT NULL, created_at INTEGER NOT NULL,
+                "read" INTEGER NOT NULL DEFAULT 0)""")
+            database.execSQL("CREATE INDEX IF NOT EXISTS app_events_kind_sequence ON app_events(kind, sequence DESC)")
         }
     }
 
     companion object {
         private const val DATABASE_NAME = "line-secure-store.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val DEVICE_ID = 1
         private const val PREKEY_POOL_SIZE = 100
         private const val MAX_PAGE_SIZE = 100
+        private const val EVENT_PAGE_SIZE = 40
+        private const val SEARCH_RESULT_PAGE_SIZE = 40
+        private const val MAX_SEARCH_SCAN = 200
+        private const val MIN_SEARCH_QUERY_LENGTH = 2
+        private const val MAX_SEARCH_QUERY_LENGTH = 128
+        private const val MAX_ACTIVITY_ID_LENGTH = 256
+        private const val MAX_ACTIVITY_STATE_LENGTH = 64
+        private const val MAX_ACTIVITY_MEMBERS = 100
         private const val MAX_OUTBOX_ITEMS = 100
         private const val MAX_ENVELOPE_BYTES = 16 * 1024
         private const val MAX_CHAT_TEXT_BYTES = 4 * 1024
