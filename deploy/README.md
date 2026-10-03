@@ -4,7 +4,7 @@ This is a native-process deployment template; it does not require Docker or Comp
 
 ## LiveKit
 
-Use an official LiveKit Server binary and the configuration in [`livekit.yaml`](livekit.yaml):
+Use an official LiveKit Server binary and the configuration in [`livekit.yaml`](livekit.yaml). The locally smoke-tested version is **1.13.7**; pin this version for a reproducible deployment, then test upgrades separately:
 
 ```sh
 livekit-server --config /etc/livekit/livekit.yaml

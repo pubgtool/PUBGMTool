@@ -85,8 +85,8 @@ class MainActivity : Activity() {
         dial = savedInstanceState?.getString("dial") ?: ""
         tab = savedInstanceState?.getString("tab") ?: "calls"
         selectedPeer = savedInstanceState?.getString("peer") ?: ""
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        root = column().apply { setBackgroundColor(WHITE) }
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        root = column().apply { setBackgroundColor(WHITE); isFocusableInTouchMode = true }
         root.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
@@ -111,6 +111,7 @@ class MainActivity : Activity() {
         navigation = row().apply { setPadding(dp(12), dp(8), dp(12), dp(8)) }
         root.addView(navigation)
         setContentView(root)
+        root.requestFocus()
         if (Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.setSystemBarsAppearance(
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
@@ -159,13 +160,14 @@ class MainActivity : Activity() {
         val desired = if (tab == "calls" && value.phase != Phase.IDLE) "active" else tab
         val numberAssigned = previous.number.isEmpty() != value.number.isEmpty()
         val incomingChanged = (previous.phase == Phase.INCOMING) != (value.phase == Phase.INCOMING)
-        if (screen != desired || (desired == "active" && incomingChanged) ||
+        if (screen != desired || (desired == "active" && incomingChanged) || previous.configReady != value.configReady ||
             (desired in setOf("calls", "profile") && numberAssigned) || (desired == "profile" && previous.highQuality != value.highQuality)) {
             rebuild(desired, animate = screen.isNotEmpty())
         }
         numberTitle?.text = UiPresentation.numberTitle(value)
         numberHint?.text = UiPresentation.numberHint(value)
         primaryLabel?.text = callActionTitle()
+        primaryCall?.contentDescription = callActionTitle()
         primaryCall?.alpha = if (UiPresentation.canCall(value) && members(dial).isEmpty()) 0.45f else 1f
         if (screen == "active") {
             if (previous.members != value.members || previous.participants != value.participants || previous.phase != value.phase) renderParticipants()
@@ -197,6 +199,7 @@ class MainActivity : Activity() {
         when (target) { "calls" -> dialScreen(); "chat" -> chatScreen(); "profile" -> profileScreen(); else -> callScreen() }
         renderNavigation()
         primaryLabel?.text = callActionTitle()
+        primaryCall?.contentDescription = callActionTitle()
         if (animate) Motion.enter(content)
     }
 
@@ -223,22 +226,22 @@ class MainActivity : Activity() {
         return body
     }
 
-    private fun numberCard(): LinearLayout {
+    private fun numberCard(compact: Boolean = false): LinearLayout {
         val assigned = state.number.isNotEmpty()
         val card = row().apply {
             background = ripple(if (assigned) INK else PALE, 24)
-            setPadding(dp(20), dp(20), dp(18), dp(20))
+            setPadding(dp(20), dp(if (compact) 12 else 20), dp(18), dp(if (compact) 12 else 20))
             setOnClickListener { if (state.number.isNotEmpty()) copyNumber() else showConnect() }
             contentDescription = "Ваш номер"; Motion.press(this)
         }
         val labels = column()
         labels.addView(text("Ваш номер", 12, color = if (assigned) 0xFFB2B2B2.toInt() else GRAY))
-        numberTitle = text(UiPresentation.numberTitle(state), if (assigned) 32 else 21, Typeface.BOLD, if (assigned) WHITE else INK).apply {
-            setPadding(0, dp(10), 0, dp(8)); setFontFeatureSettings("tnum")
+        numberTitle = text(UiPresentation.numberTitle(state), if (assigned) if (compact) 24 else 32 else 21, Typeface.BOLD, if (assigned) WHITE else INK).apply {
+            setPadding(0, dp(if (compact) 4 else 10), 0, dp(if (compact) 0 else 8)); setFontFeatureSettings("tnum")
         }
         labels.addView(numberTitle)
         numberHint = text(UiPresentation.numberHint(state), 12, color = if (assigned) 0xFFB2B2B2.toInt() else GRAY)
-        labels.addView(numberHint)
+        if (!compact) labels.addView(numberHint)
         card.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
         card.addView(LineIcon(this, if (assigned) "copy" else "arrow", if (assigned) WHITE else INK), LinearLayout.LayoutParams(dp(22), dp(22)))
         return card
@@ -246,8 +249,14 @@ class MainActivity : Activity() {
 
     private fun dialScreen() {
         val body = scrollBody()
-        body.addView(numberCard())
-        val subtitle = row().apply { setPadding(0, dp(26), 0, dp(12)) }
+        val scroller = content.getChildAt(0)
+        content.removeView(scroller)
+        val layout = column()
+        layout.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
+        content.addView(layout, FrameLayout.LayoutParams(-1, -1))
+        body.addView(numberCard(compact = state.configReady))
+        if (state.configReady) {
+        val subtitle = row().apply { setPadding(0, dp(14), 0, dp(8)) }
         subtitle.addView(text("Новый звонок", 17, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
         subtitle.addView(text("До 8 участников", 12, color = GRAY))
         body.addView(subtitle)
@@ -260,7 +269,7 @@ class MainActivity : Activity() {
             contentDescription = "Номера участников"
             addTextChangedListener(watcher { dial = it; primaryCall?.alpha = if (UiPresentation.canCall(state) && members(it).isEmpty()) 0.45f else 1f })
         }
-        body.addView(input, LinearLayout.LayoutParams(-1, dp(70)))
+        body.addView(input, LinearLayout.LayoutParams(-1, dp(54)))
         listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf(",", "0", "delete")).forEach { keys ->
             val row = row()
             keys.forEach { key ->
@@ -276,9 +285,10 @@ class MainActivity : Activity() {
                     if (key == "delete") setOnLongClickListener { input.setText(""); true }
                     Motion.press(this)
                 }
-                row.addView(cell, LinearLayout.LayoutParams(0, dp(60), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+                row.addView(cell, LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), 0, dp(3), 0) })
             }
             body.addView(row)
+        }
         }
         primaryCall = actionButton("Позвонить", "phone", true) {
             when {
@@ -289,7 +299,9 @@ class MainActivity : Activity() {
             }
         }
         primaryLabel = primaryCall?.findViewWithTag("label")
-        body.addView(primaryCall, LinearLayout.LayoutParams(-1, dp(58)).apply { topMargin = dp(12) })
+        val footer = FrameLayout(this).apply { setPadding(dp(24), dp(8), dp(24), dp(12)) }
+        footer.addView(primaryCall, FrameLayout.LayoutParams(-1, dp(58)))
+        layout.addView(footer)
     }
 
     private fun callScreen() {

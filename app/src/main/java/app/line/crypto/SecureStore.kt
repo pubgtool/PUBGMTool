@@ -901,7 +901,9 @@ class SecureStore(context: Context) : AutoCloseable {
 
         override fun onConfigure(database: SQLiteDatabase) {
             super.onConfigure(database)
-            database.execSQL("PRAGMA secure_delete=ON")
+            database.rawQuery("PRAGMA secure_delete=ON", null).use { cursor ->
+                check(cursor.moveToFirst() && cursor.getInt(0) == 1) { "Secure deletion could not be enabled" }
+            }
             database.execSQL("PRAGMA synchronous=FULL")
         }
 

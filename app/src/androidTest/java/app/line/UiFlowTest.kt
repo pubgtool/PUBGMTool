@@ -19,10 +19,8 @@ class UiFlowTest {
                 val root = activity.window.decorView
                 assertTrue(labels(root).any { it == "Номер появится после подключения к Line" })
                 assertFalse(labels(root).any { it.contains("WebRTC", true) || it.contains("ТОЛЬКО ГОЛОС") || it.contains("E2EE") })
-                find(root, "1").performClick(); find(root, "2").performClick()
-                assertEquals("12", descendants(root).filterIsInstance<EditText>().first().text.toString())
-                find(root, "Удалить цифру").performClick()
-                assertEquals("1", descendants(root).filterIsInstance<EditText>().first().text.toString())
+                assertTrue(descendants(root).any { it.contentDescription?.toString() == "Подключить Line" })
+                assertFalse(descendants(root).any { it is EditText })
                 find(root, "Сообщения").performClick()
                 assertTrue(labels(root).any { it == "Начните разговор" })
                 find(root, "Профиль").performClick()
