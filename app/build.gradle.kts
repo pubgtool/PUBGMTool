@@ -26,6 +26,14 @@ android {
         resources.excludes += setOf("libsignal_jni*.dylib", "signal_jni*.dll", "libsignal_jni*.so")
         jniLibs.excludes += "**/libsignal_jni_testing.so"
     }
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = true
+        }
+    }
     buildTypes {
         release { isMinifyEnabled = false }
     }

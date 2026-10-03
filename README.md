@@ -33,7 +33,7 @@ npm test
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-В Android Studio откройте корень. Setup принимает лицензии SDK и создаёт `local.properties`. Debug APK — для проверки; для публикации нужны release-подпись, испытания и аудит. APK не содержит testing JNI; NDK убирает debug symbols. Для магазина используйте AAB. Секреты и signing/private keys нельзя включать в Git/APK.
+В Android Studio откройте корень. Setup принимает лицензии SDK и создаёт `local.properties`. Debug APK — для проверки; для публикации нужны release-подпись, испытания и аудит. APK не содержит testing JNI; NDK убирает debug symbols. Для меньшего скачивания доступны `app-arm64-v8a-debug.apk` (большинство современных телефонов), `app-armeabi-v7a-debug.apk` (32-битные ARM), x86/x86_64 и универсальный APK. Для магазина используйте AAB. Секреты и signing/private keys нельзя включать в Git/APK.
 
 ## Настоящие серверы
 
