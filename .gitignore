@@ -22,3 +22,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Android and local signaling identities
+.gradle/
+.android-sdk/
+.tools/
+local.properties
+**/build/
+server/data/
+.env
+*.keystore
+*.jks
+artifacts/
+app/src/debug/AndroidManifest.xml
+app/src/debug/res/xml/local_test_security.xml
+app/src/debug/res/raw/local_test_ca.pem

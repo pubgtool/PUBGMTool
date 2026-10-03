@@ -1,0 +1,4 @@
+# Replace this domain with your own. Caddy obtains and renews HTTPS certificates.
+line.example.org {
+    reverse_proxy 127.0.0.1:3000
+}
