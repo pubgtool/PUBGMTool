@@ -134,7 +134,7 @@ test('registration stores only token hashes and public bundles in an atomic 0600
   const address = await resource.server.listen(0, '127.0.0.1');
   resource.url = `ws://127.0.0.1:${address.port}/signal`;
   const reconnect = await openSocket(resource);
-  assert.deepEqual(await register(reconnect, token('a'), bundle(11)), { type: 'registered', number: registered.number });
+  assert.deepEqual(await register(reconnect, token('a'), bundle(11)), { type: 'registered', number: registered.number, mediaReady: false });
 });
 
 test('version-1 registrations migrate on bundle registration without changing numbers', async () => {
@@ -148,7 +148,7 @@ test('version-1 registrations migrate on bundle registration without changing nu
   const resource = { server, directory, url: `ws://127.0.0.1:${address.port}/signal`, sockets: [] };
   resources.push(resource);
   const socket = await openSocket(resource);
-  assert.deepEqual(await register(socket, oldToken, bundle(12)), { type: 'registered', number: '01234567' });
+  assert.deepEqual(await register(socket, oldToken, bundle(12)), { type: 'registered', number: '01234567', mediaReady: false });
   const migrated = JSON.parse(await readFile(dataFile, 'utf8'));
   assert.equal(migrated.version, 2);
   assert.equal(migrated.identities[hash].number, '01234567');
@@ -231,6 +231,7 @@ test('group calls issue verifiable, short-lived, room-scoped microphone-only Liv
   const memberB = await openSocket(resource);
   const outsider = await openSocket(resource);
   const ownerInfo = await register(owner, token('2'), bundle(21, 0));
+  assert.equal(ownerInfo.mediaReady, true);
   const memberAInfo = await register(memberA, token('3'), bundle(22, 0));
   const memberBInfo = await register(memberB, token('4'), bundle(23, 0));
   await register(outsider, token('5'), bundle(24, 0));

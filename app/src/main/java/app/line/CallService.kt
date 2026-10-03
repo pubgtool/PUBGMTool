@@ -122,6 +122,14 @@ class CallService : Service() {
         work { connect() }
     }
 
+    fun reconnectNow() { if (state.phase == Phase.IDLE) work { connect() } }
+
+    fun setQuality(highQuality: Boolean) {
+        if (state.phase != Phase.IDLE) return
+        prefs.edit().putBoolean("high_quality", highQuality).apply()
+        update(state.copy(highQuality = highQuality))
+    }
+
     private fun token(): String = prefs.getString("token", null) ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it.toInt() and 255) }.also { prefs.edit().putString("token", it).commit() }
 
@@ -134,10 +142,13 @@ class CallService : Service() {
         socket = null
         http?.dispatcher?.executorService?.shutdown()
         http?.connectionPool?.evictAll()
-        val endpoints = config() ?: return
+        val endpoints = config() ?: run {
+            update(state.copy(online = false, mediaReady = false, configReady = false, message = "Подключите Line, чтобы получить номер"))
+            return
+        }
         val bundle = db { it.publicBundle() }
         http = endpoints.http()
-        update(state.copy(online = false, message = "Подключение с проверкой сертификата…"))
+        update(state.copy(online = false, mediaReady = false, message = "Подключение…"))
         socket = http!!.newWebSocket(Request.Builder().url(endpoints.apiUrl).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 scope.launch { if (epoch == generation) {
@@ -172,7 +183,7 @@ class CallService : Service() {
         socket?.cancel(); socket = null
         lookups.values.forEach { it.completeExceptionally(IllegalStateException("Offline")) }; lookups.clear()
         if (state.phase != Phase.IDLE) finish("Соединение потеряно. Звонок завершён", notifyServer = false)
-        update(state.copy(online = false, message = "Сервер недоступен или сертификат не соответствует pin"))
+        update(state.copy(online = false, mediaReady = false, message = "Не удалось подключиться. Проверьте настройки сервиса"))
         retryJob?.cancel()
         retryJob = scope.launch { delay(5_000); connect() }
     }
@@ -229,7 +240,7 @@ class CallService : Service() {
                 require(number.matches(Regex("[0-9]{8}")))
                 db { it.setLocalNumber(number) }
                 prefs.edit().putString("number", number).apply()
-                update(state.copy(number = number, online = true, message = "LiveKit · Signal Protocol · TLS pinning"))
+                update(state.copy(number = number, online = true, mediaReady = message.optBoolean("mediaReady"), message = "В сети"))
                 val outbox = db { it.outbox() }
                 chatEnvelopeIds.addAll(outbox.map { it.id })
                 outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
@@ -371,7 +382,7 @@ class CallService : Service() {
                 work {
                     if (intent.action == "dial" && state.phase == Phase.IDLE) {
                         val members = intent.getStringArrayListExtra("members")?.distinct() ?: emptyList()
-                        require(members.size in 1..7 && state.number !in members && state.online)
+                        require(members.size in 1..7 && state.number !in members && state.online && state.mediaReady)
                         update(state.copy(phase = Phase.OUTGOING, peer = members.joinToString(", "), members = listOf(state.number) + members, message = "Создаём группу…"))
                         withTimeout(20_000) { for (number in members) preparePeer(number) }
                         acquireWakeLock()
@@ -440,7 +451,7 @@ class CallService : Service() {
             Intent(this, CallService::class.java).setAction(name), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, "calls").setSmallIcon(R.drawable.ic_line)
             .setContentTitle("Line · групповой звонок")
-            .setContentText(if (state.muted) "Микрофон выключен" else state.message)
+            .setContentText(if (state.muted) "Микрофон выключен" else if (state.phase == Phase.CONNECTED) "В звонке" else "Соединяем…")
             .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
             .setOngoing(true).setCategory(Notification.CATEGORY_CALL).setVisibility(Notification.VISIBILITY_PRIVATE)
             .addAction(Notification.Action.Builder(null, "Микрофон", action("mute", 1)).build())

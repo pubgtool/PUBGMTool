@@ -46,7 +46,7 @@ All messages are JSON text. Registration is required within 10 seconds. Maximum 
 }
 ```
 
-Success: `{ "type": "registered", "number": "12345678" }`. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
+Success: `{ "type": "registered", "number": "12345678", "mediaReady": true }`. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
 
 ### Encrypted messages
 

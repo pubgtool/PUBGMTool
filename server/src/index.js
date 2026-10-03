@@ -346,7 +346,7 @@ export async function createSignalingServer(options = {}) {
     session.number = number;
     sessions.set(number, session);
     clearTimeout(timers.get(session));
-    send(session.socket, { type: 'registered', number });
+    send(session.socket, { type: 'registered', number, mediaReady: Boolean(mediaConfig) });
   }
 
   async function updateKeys(session, bundle) {
