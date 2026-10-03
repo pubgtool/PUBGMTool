@@ -13,7 +13,6 @@ import androidx.test.uiautomator.UiScrollable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File

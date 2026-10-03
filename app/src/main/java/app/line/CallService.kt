@@ -157,7 +157,7 @@ class CallService : Service() {
 
     fun lockAdmin() {
         adminEpoch++
-        if (adminExpiresAt > 0) send("admin", JSONObject().put("requestId", UUID.randomUUID().toString()).put("action", "logout"))
+        if (adminExpiresAt > 0 || adminRequests.isNotEmpty()) send("admin", JSONObject().put("requestId", UUID.randomUUID().toString()).put("action", "logout"))
         adminExpiresAt = 0
         adminRequests.values.forEach { it.completeExceptionally(IllegalStateException("Админ-сессия закрыта")) }
         adminRequests.clear()

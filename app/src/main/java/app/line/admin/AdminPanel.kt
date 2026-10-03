@@ -22,6 +22,7 @@ class AdminPanel(
 ) {
     private var dialog: AlertDialog? = null
     private var job: Job? = null
+    private var sessionWatch: Job? = null
     private lateinit var body: LinearLayout
 
     fun show() {
@@ -29,8 +30,14 @@ class AdminPanel(
         body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(10), dp(24), dp(20)) }
         dialog = AlertDialog.Builder(activity).setTitle("Администратор")
             .setView(ScrollView(activity).apply { addView(body) }).setNegativeButton("Закрыть", null).create()
-        dialog?.setOnDismissListener { job?.cancel(); service.lockAdmin() }
+        dialog?.setOnDismissListener { job?.cancel(); sessionWatch?.cancel(); service.lockAdmin() }
         dialog?.show()
+        sessionWatch = scope.launch {
+            while (isActive) {
+                delay(1000)
+                if (!service.isAdmin()) { dismiss(); break }
+            }
+        }
         refresh()
     }
 

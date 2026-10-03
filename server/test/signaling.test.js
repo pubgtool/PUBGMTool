@@ -431,6 +431,17 @@ test('admin login is hash-verified, scoped to one socket, expires, and exposes p
   assert.equal((await adminAction(expiringSocket, 'status')).error, 'expired');
 });
 
+test('logout cancels a pending password check and cannot leave an authenticated socket', async () => {
+  const resource = await setup({ env: adminEnv() });
+  const socket = await openSocket(resource);
+  await register(socket, token('7'), bundle(47, 0));
+  const login = adminLogin(socket);
+  const logout = await adminAction(socket, 'logout');
+  assert.equal(logout.result.loggedOut, true);
+  assert.equal((await login).error, 'login_cancelled');
+  assert.equal((await adminAction(socket, 'status')).error, 'unauthorized');
+});
+
 test('admin login failures are rate limited and lock out the peer until the lock expires', async () => {
   const resource = await setup({ env: adminEnv(), adminLockMs: 80, adminRateWindowMs: 250 });
   const socket = await openSocket(resource);

@@ -415,6 +415,7 @@ export async function createSignalingServer(options = {}) {
       return;
     }
     session.adminLoginPending = true;
+    const authGeneration = session.adminAuthGeneration ?? 0;
     pendingAdminLogins += 1;
     let valid = false;
     try {
@@ -436,6 +437,10 @@ export async function createSignalingServer(options = {}) {
       if (!session.closed && session.socket.readyState === WebSocket.OPEN) {
         adminResult(session, requestId, false, { error: 'invalid_credentials' });
       }
+      return;
+    }
+    if ((session.adminAuthGeneration ?? 0) !== authGeneration) {
+      if (!session.closed && session.socket.readyState === WebSocket.OPEN) adminResult(session, requestId, false, { error: 'login_cancelled' });
       return;
     }
     bucket.failures = 0;
@@ -591,6 +596,13 @@ export async function createSignalingServer(options = {}) {
         || Object.keys(message).some((key) => !['type', 'requestId', 'action', 'callId'].includes(key))) {
         return adminResult(session, message.requestId, false, { error: 'invalid_message' });
       }
+    }
+    if (message.action === 'logout') {
+      if (!session.number) return adminResult(session, message.requestId, false, { error: 'registration_required' });
+      if (session.adminExpiresAt || session.adminLoginPending) appendAdminEvent('admin_logout');
+      session.adminAuthGeneration = (session.adminAuthGeneration ?? 0) + 1;
+      session.adminExpiresAt = undefined;
+      return adminResult(session, message.requestId, true, { result: { loggedOut: true } });
     }
     if (!session.adminExpiresAt) return adminResult(session, message.requestId, false, { error: 'unauthorized' });
     if (session.adminExpiresAt <= Date.now()) {
