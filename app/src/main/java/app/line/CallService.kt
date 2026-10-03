@@ -210,6 +210,7 @@ class CallService : Service() {
     suspend fun verified(number: String): Boolean = db { it.isVerified(number) }
     suspend fun verifyPeer(number: String) = db { it.verifyPeer(number) }
     suspend fun messages(number: String, before: Long? = null): List<ChatMessage> = db { it.messages(number, before, 40) }
+    suspend fun conversations(before: Long? = null): List<ChatMessage> = db { it.conversations(before, 40) }
 
     private suspend fun preparePeer(number: String) {
         val exists = db { it.hasSession(number) }

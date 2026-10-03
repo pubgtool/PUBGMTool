@@ -345,6 +345,26 @@ class SecureStore(context: Context) : AutoCloseable {
         return descending.asReversed()
     }
 
+    @Synchronized
+    fun conversations(before: Long? = null, limit: Int = 40): List<ChatMessage> {
+        ensureOpen()
+        val cursorClause = if (before == null) "" else "WHERE m.sequence < ?"
+        val args = if (before == null) arrayOf(limit.coerceIn(1, MAX_PAGE_SIZE).toString())
+            else arrayOf(before.toString(), limit.coerceIn(1, MAX_PAGE_SIZE).toString())
+        val result = ArrayList<ChatMessage>()
+        db.rawQuery("""SELECT m.id, m.peer, m.text, m.outgoing, m.status, m.sequence, m.created_at
+            FROM messages m JOIN (SELECT peer, MAX(sequence) AS latest FROM messages GROUP BY peer) c
+            ON m.sequence=c.latest $cursorClause ORDER BY m.sequence DESC LIMIT ?""", args).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                val peer = cursor.getString(1)
+                result += ChatMessage(id, peer, open("messages", scopedKey(peer, id), cursor.getBlob(2)).toString(StandardCharsets.UTF_8),
+                    cursor.getInt(3) != 0, cursor.getString(4), cursor.getLong(5), cursor.getLong(6))
+            }
+        }
+        return result
+    }
+
     /** Idempotent for an identical entry; ciphertext is retained unchanged for all retries. */
     @Synchronized
     fun putOutbox(peer: String, id: String, cipherType: Int, body: String) {

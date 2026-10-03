@@ -13,6 +13,19 @@ class LineIcon(context: Context, private val name: String, color: Int) : View(co
     }
     private val path = Path().apply {
         when (name) {
+            "compose" -> {
+                moveTo(13f, 4f); lineTo(5f, 4f); quadTo(3f, 4f, 3f, 6f); lineTo(3f, 19f)
+                quadTo(3f, 21f, 5f, 21f); lineTo(18f, 21f); quadTo(20f, 21f, 20f, 19f); lineTo(20f, 12f)
+                moveTo(10f, 14f); lineTo(11f, 10f); lineTo(18f, 3f); lineTo(21f, 6f); lineTo(14f, 13f); close()
+            }
+            "shield" -> {
+                moveTo(12f, 3f); lineTo(21f, 6f); lineTo(20f, 14f)
+                quadTo(18f, 19f, 12f, 22f); quadTo(6f, 19f, 4f, 14f); lineTo(3f, 6f); close()
+                moveTo(8f, 12f); lineTo(11f, 15f); lineTo(16f, 9f)
+            }
+            "more" -> {
+                addCircle(5f, 12f, 0.8f, Path.Direction.CW); addCircle(12f, 12f, 0.8f, Path.Direction.CW); addCircle(19f, 12f, 0.8f, Path.Direction.CW)
+            }
             "phone" -> {
                 moveTo(5f, 3f); lineTo(9f, 3f); lineTo(10.5f, 8f); lineTo(8f, 10f)
                 cubicTo(9.5f, 13f, 11f, 14.5f, 14f, 16f); lineTo(16f, 13.5f); lineTo(21f, 15f)

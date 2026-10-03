@@ -19,6 +19,13 @@ class LocalStoreTest {
             val older = store.messages(peer, newest.first().sequence, 40)
             assertEquals(40, older.size)
             assertTrue(older.last().sequence < newest.first().sequence)
+            store.saveMessage("22223333", "conversation-test", "Другой диалог", false, "received")
+            val conversations = store.conversations(limit = 2)
+            assertEquals(2, conversations.size)
+            assertEquals("22223333", conversations[0].peer)
+            assertEquals(peer, conversations[1].peer)
+            assertEquals("Сообщение 84", conversations[1].text)
+            assertTrue(store.conversations(before = conversations.last().sequence).isEmpty())
         }
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         instrumentation.runOnMainSync { assertNotNull(activity.window.decorView); activity.finish() }
