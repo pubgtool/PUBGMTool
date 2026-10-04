@@ -370,7 +370,8 @@ async function postPushHttps(url, body, address, ttlMs) {
     const req = httpsRequest(url, {
       method: 'POST',
       headers: {
-        'content-type': 'text/plain; charset=utf-8',
+        'content-type': 'application/octet-stream',
+        'x-unifiedpush': '1',
         'content-length': bodyBytes.length,
         'cache': 'no',
         'priority': '5',
@@ -1190,6 +1191,7 @@ export async function createSignalingServer(options = {}) {
   }
 
   async function register(session, tokenValue, bundle, protocolVersion = 6) {
+    const negotiatedProtocolVersion = Math.min(protocolVersion, 8);
     if (session.number) return error(session.socket, 'already_registered');
     if (!takeRegistrationSlot(session.ip)) return error(session.socket, 'rate_limited');
     if (typeof tokenValue !== 'string' || !TOKEN_PATTERN.test(tokenValue)) return error(session.socket, 'invalid_token');
@@ -1237,7 +1239,7 @@ export async function createSignalingServer(options = {}) {
       cleanupSession(previous);
     }
     session.number = number;
-    session.protocolVersion = protocolVersion;
+    session.protocolVersion = negotiatedProtocolVersion;
     sessions.set(number, session);
     clearTimeout(timers.get(session));
     appendAdminEvent('registration');
@@ -1249,7 +1251,10 @@ export async function createSignalingServer(options = {}) {
       registrationEnabled: adminSettings.registrationEnabled,
       maxParticipants: adminSettings.maxParticipants,
     };
-    if (protocolVersion >= 7) registered.pushEnabled = Boolean(pushConfigured && pushTokens.has(number));
+    if (negotiatedProtocolVersion >= 7) {
+      registered.protocolVersion = negotiatedProtocolVersion;
+      registered.pushEnabled = Boolean(pushConfigured && pushTokens.has(number));
+    }
     send(session.socket, registered);
     resumeSession(session);
   }
@@ -1316,6 +1321,7 @@ export async function createSignalingServer(options = {}) {
   }
 
   function sendPeerInfo(session, message) {
+    if (session.protocolVersion < 8) return error(session.socket, 'invalid_message', { requestId: message.requestId });
     if (!adminSettings.chatEnabled) return error(session.socket, 'chat_disabled', { requestId: message.requestId });
     if (message.to === session.number || blockedNumbers.has(message.to)) {
       return error(session.socket, message.to === session.number ? 'self' : 'not_found', { requestId: message.requestId });
@@ -1551,7 +1557,7 @@ export async function createSignalingServer(options = {}) {
         }
         return sendPeerInfo(session, message);
       case 'profile_update':
-        if (!hasOnlyKeys(message, ['type', 'displayName', 'requestId'])
+        if (session.protocolVersion < 8 || !hasOnlyKeys(message, ['type', 'displayName', 'requestId'])
           || typeof message.displayName !== 'string' || typeof message.requestId !== 'string'
           || !UUID_PATTERN.test(message.requestId)) return error(session.socket, 'invalid_message');
         return queueStoreOperation(session, () => updateProfile(session, message),

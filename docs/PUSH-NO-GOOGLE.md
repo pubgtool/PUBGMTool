@@ -25,7 +25,7 @@ The endpoint must use HTTPS, match one configured origin exactly, contain no cre
 The signaling server sends a direct HTTP POST to the registered URL, with a JSON body containing exactly `kind` and `id`:
 
 ```json
-{ "kind": "message", "id": "<uuid>" }
+{ "kind": "message", "id": "550e8400-e29b-41d4-a716-446655440000" }
 ```
 
 `kind` is `message`, `call`, or `call_ended`. The server does not send message text, ciphertext, peer names/numbers, or media credentials. Delivery uses a five-second timeout; redirects are treated as errors, and 404/410 removes the stale endpoint. No endpoint is created or accepted when push is disabled. ntfy accepts messages using HTTP POST to a topic URL; see the [official publishing documentation](https://docs.ntfy.sh/publish/).

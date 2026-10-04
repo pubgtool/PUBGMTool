@@ -449,7 +449,7 @@ class MainActivity : ComponentActivity() {
         if (callsOnly) layout.addView(callTabs(true)) else {
             layout.addView(text("Новые звонки и сообщения", 14, Typeface.BOLD).apply { setPadding(0, 0, 0, dp(12)) })
             layout.addView(settingsRow("Настройки уведомлений", if (notificationsAllowed()) "Уведомления разрешены" else "Уведомления выключены", "bell") { showNotificationSettings() })
-            val pushHint = if (state.serverProtocol == 6) R.string.legacy_api_notice else if (PushConfiguration.isConfigured(this)) R.string.push_active_hint else R.string.push_missing
+            val pushHint = if (state.serverProtocol in 1..7) R.string.api_update_notice else if (state.pushReady) R.string.push_active_hint else R.string.push_missing
             layout.addView(text(getString(pushHint), 12, color = GRAY).apply { setPadding(0, dp(8), 0, dp(14)) })
         }
         val frame = FrameLayout(this)
@@ -692,10 +692,10 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { if (state.number.isNotEmpty()) copyNumber() }
         }
         account.addView(ownNumber); identity.addView(account, LinearLayout.LayoutParams(0, -2, 1f)); body.addView(identity)
-        connectionStatus = text(if (state.online) "В сети" else "Не подключён", 12, color = GRAY).apply { setPadding(dp(4), dp(16), 0, dp(16)) }
-        body.addView(connectionStatus)
         val settings = column().apply { background = shape(WHITE, 22); setPadding(dp(18), 0, dp(16), 0) }
-        settings.addView(settingsRow("Подключение", if (state.online) "В сети" else "Подключить", "arrow") { connectionDetails() })
+        val connectionRow = settingsRow("Подключение", if (state.online) "В сети" else "Подключить", "arrow") { connectionDetails() }
+        connectionStatus = connectionRow.findViewWithTag("detail")
+        settings.addView(connectionRow)
         settings.addView(divider())
         settings.addView(settingsRow("Качество звука", if (state.highQuality) "Высокое" else "Для слабой сети", "speaker") { showQuality() })
         settings.addView(divider())
@@ -711,7 +711,7 @@ class MainActivity : ComponentActivity() {
         settings.addView(settingsRow("О приложении", version, "about") {
             info("Line $version", "Звонки и сообщения. Содержимое защищено на устройствах; сервис и сеть могут видеть участников и время соединений. Новые входящие доступны при открытом приложении.")
         })
-        body.addView(settings)
+        body.addView(settings, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(20) })
         body.addView(settingsRow(getString(R.string.push_title), if (state.pushReady) "Настроено" else "Подключить", "bell") { choosePushProvider() },
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
     }
@@ -1075,10 +1075,10 @@ class MainActivity : ComponentActivity() {
         return body
     }
     private fun settingsRow(title: String, detail: String, icon: String, action: () -> Unit) = row().apply {
-        minimumHeight = dp(72); background = ripple(WHITE, 12)
+        minimumHeight = dp(64); background = ripple(WHITE, 12)
         addView(LineIcon(this@MainActivity, icon, INK), size(21).apply { marginEnd = dp(14) })
         addView(text(title, 14, Typeface.BOLD).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(text(detail, 11, color = GRAY).apply { maxWidth = dp(110); maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        addView(text(detail, 11, color = GRAY).apply { tag = "detail"; maxWidth = dp(110); maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
         addView(LineIcon(this@MainActivity, "chevron", GRAY), size(14).apply { marginStart = dp(8) })
         setOnClickListener { Feedback.interfaceClick(this@MainActivity); action() }; contentDescription = t(title); isSoundEffectsEnabled = false; Motion.press(this)
     }

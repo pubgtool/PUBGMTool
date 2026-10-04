@@ -168,6 +168,7 @@ test('registration stores only token hashes and public bundles in an atomic 0600
     type: 'registered', apiVersion: 8, number: registered.number, displayName: '', mediaReady: false,
     callsEnabled: true, chatEnabled: true, registrationEnabled: true, maxParticipants: 8,
   });
+  assert.equal(registered.protocolVersion, undefined);
 });
 
 test('version-1 registrations migrate on bundle registration without changing numbers', async () => {
@@ -235,6 +236,8 @@ test('profile names are account-bound, normalized, private to known peers, and s
   const peer = await openSocket(resource);
   const requesterInfo = await register(requester, token('a'), bundle(90, 0), 8);
   const peerInfo = await register(peer, token('b'), bundle(91, 1), 8);
+  assert.equal(requesterInfo.protocolVersion, 8);
+  assert.equal(peerInfo.protocolVersion, 8);
   const nameRequest = uuid(9_101);
   assert.deepEqual(await sendRequest(peer, {
     type: 'profile_update', requestId: nameRequest, displayName: '  Zoë 👩‍🔬  ',
@@ -249,6 +252,21 @@ test('profile names are account-bound, normalized, private to known peers, and s
     exists: true, displayName: 'Zoë 👩‍🔬', online: true,
   });
   assert.equal((await lookup(requester, peerInfo.number, uuid(9_103))).displayName, 'Zoë 👩‍🔬');
+  const versionSeven = await openSocket(resource);
+  const versionSevenRegistration = await register(versionSeven, token('c'), bundle(99, 0), 7);
+  assert.equal(versionSevenRegistration.protocolVersion, 7);
+  const versionSevenPeerInfo = await sendRequest(versionSeven, {
+    type: 'peer_info', to: peerInfo.number, requestId: uuid(9_109),
+  }, (item) => item.type === 'error');
+  assert.deepEqual(versionSevenPeerInfo, { type: 'error', code: 'invalid_message', requestId: uuid(9_109) });
+  const versionSevenProfileUpdate = await sendRequest(versionSeven, {
+    type: 'profile_update', requestId: uuid(9_110), displayName: 'Blocked on v7',
+  }, (item) => item.type === 'error');
+  assert.deepEqual(versionSevenProfileUpdate, { type: 'error', code: 'invalid_message' });
+  const v7Lookup = await sendRequest(versionSeven, {
+    type: 'lookup', to: peerInfo.number, requestId: uuid(9_111), consumePreKey: false,
+  }, (item) => item.requestId === uuid(9_111));
+  assert.equal(v7Lookup.displayName, 'Zoë 👩‍🔬');
   assert.deepEqual(await sendRequest(requester, {
     type: 'peer_info', to: requesterInfo.number, requestId: uuid(9_104),
   }, (item) => item.type === 'error'), {
