@@ -10,6 +10,8 @@ Use an official LiveKit Server binary and the configuration in [`livekit.yaml`](
 livekit-server --config /etc/livekit/livekit.yaml
 ```
 
+Keep `room.auto_create: false`: the API explicitly provisions each fixed-roster room before inviting participants. Otherwise a still-valid room token can recreate a deleted room. Room deletion is best-effort; a failed deletion can leave an existing room accessible until its grants expire. Monitor and resolve media-service failures rather than treating signaling hangup as token revocation.
+
 Install the configuration as `/etc/livekit/livekit.yaml` and create `/etc/livekit/api-keys.yaml` as a YAML map whose key and secret match the corresponding Node environment variables:
 
 ```yaml

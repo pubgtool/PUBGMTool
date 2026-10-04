@@ -2,6 +2,9 @@ port: 7880
 log_level: info
 key_file: /etc/livekit/api-keys.yaml
 
+room:
+  auto_create: false
+
 rtc:
   tcp_port: 7881
   port_range_start: 50000

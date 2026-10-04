@@ -86,9 +86,9 @@ async function openSocket(resource) {
   return socket;
 }
 
-async function register(socket, installationToken, publicBundle = bundle(1)) {
+async function register(socket, installationToken, publicBundle = bundle(1), protocolVersion = 6) {
   const result = waitFor(socket, (message) => ['registered', 'error'].includes(message.type));
-  socket.send(JSON.stringify({ type: 'register', token: installationToken, bundle: publicBundle }));
+  socket.send(JSON.stringify({ type: 'register', token: installationToken, bundle: publicBundle, protocolVersion }));
   return result;
 }
 
@@ -221,39 +221,358 @@ test('bundle lookups atomically consume one target prekey and report exhaustion 
   assert.equal(Object.values(stored.identities).find((entry) => entry.number === targetRegistration.number).bundle.preKeys.length, 0);
 });
 
-test('encrypted envelopes relay only to online targets, deduplicate replays, and never queue offline bodies', async () => {
+test('encrypted envelopes persist before acknowledgement and report recipient delivery separately', async () => {
   const resource = await setup();
   const sender = await openSocket(resource);
   const recipient = await openSocket(resource);
-  const senderInfo = await register(sender, token('f'), bundle(17, 0));
-  const recipientInfo = await register(recipient, token('1'), bundle(18, 0));
+  const senderInfo = await register(sender, token('f'), bundle(17, 0), 7);
+  const recipientInfo = await register(recipient, token('1'), bundle(18, 0), 7);
   const body = base64('opaque encrypted payload');
   const message = { type: 'envelope', to: recipientInfo.number, id: uuid(10), cipherType: 2, body };
 
   const delivered = waitFor(recipient, (item) => item.type === 'envelope');
-  const sent = waitFor(sender, (item) => item.type === 'sent');
+  const queued = waitFor(sender, (item) => item.type === 'queued');
   sender.send(JSON.stringify(message));
   assert.deepEqual(await delivered, {
     type: 'envelope', from: senderInfo.number, id: message.id, cipherType: 2, body,
   });
-  assert.deepEqual(await sent, { type: 'sent', id: message.id });
+  assert.deepEqual(await queued, { type: 'queued', id: message.id });
+  const deliveryReceipt = waitFor(sender, (item) => item.type === 'delivered' && item.id === message.id);
+  recipient.send(JSON.stringify({ type: 'delivery_ack', id: message.id }));
+  assert.deepEqual(await deliveryReceipt, { type: 'delivered', id: message.id });
 
-  const duplicateAck = waitFor(sender, (item) => item.type === 'sent' && item.id === message.id);
+  const duplicateAck = waitFor(sender, (item) => item.type === 'delivered' && item.id === message.id);
   const unexpectedDuplicate = waitFor(recipient, (item) => item.type === 'envelope', 150).then(() => 'duplicate', () => 'none');
   sender.send(JSON.stringify(message));
-  assert.deepEqual(await duplicateAck, { type: 'sent', id: message.id });
+  assert.deepEqual(await duplicateAck, { type: 'delivered', id: message.id });
   assert.equal(await unexpectedDuplicate, 'none');
+  const conflictingRetry = await sendRequest(sender, {
+    ...message, body: base64('different ciphertext with a reused id'),
+  }, (item) => item.type === 'error');
+  assert.deepEqual(conflictingRetry, { type: 'error', code: 'id_conflict', id: message.id });
 
   const offline = await sendRequest(sender, { ...message, to: '99999999', id: uuid(11) }, (item) => item.type === 'error');
-  assert.deepEqual(offline, { type: 'error', code: 'offline', id: uuid(11) });
+  assert.deepEqual(offline, { type: 'error', code: 'not_found', id: uuid(11) });
   const invalidCipher = await sendRequest(sender, { ...message, id: uuid(12), body: 'not base64!' }, (item) => item.type === 'error');
   assert.equal(invalidCipher.code, 'invalid_message');
   assert.equal((await readFile(join(resource.directory, 'identities.json'), 'utf8')).includes(body), false);
+  const mailboxFile = join(resource.directory, 'identities.json.mailbox.json');
+  const mailbox = JSON.parse(await readFile(mailboxFile, 'utf8'));
+  assert.deepEqual(mailbox.envelopes, []);
+  assert.deepEqual(mailbox.receipts, [{
+    from: senderInfo.number, to: recipientInfo.number, id: message.id,
+    cipherType: message.cipherType,
+    cipherHash: createHash('sha256').update(`${message.cipherType}:${message.body}`).digest('hex'),
+    createdAt: mailbox.receipts[0].createdAt, expiresAt: mailbox.receipts[0].expiresAt,
+  }]);
+  assert.equal((await stat(mailboxFile)).mode & 0o777, 0o600);
+});
+
+test('offline ciphertext survives a server restart, rejects unauthorized acknowledgements, and replays durable receipts', async () => {
+  const resource = await setup();
+  const sender = await openSocket(resource);
+  const recipient = await openSocket(resource);
+  const senderInfo = await register(sender, token('a'), bundle(51, 0), 7);
+  const recipientInfo = await register(recipient, token('b'), bundle(52, 0), 7);
+  await closeSocket(recipient);
+  const message = {
+    type: 'envelope', to: recipientInfo.number, id: uuid(5_101), cipherType: 3,
+    body: base64('opaque-offline-ciphertext'),
+  };
+  const queued = waitFor(sender, (item) => item.type === 'queued' && item.id === message.id);
+  sender.send(JSON.stringify(message));
+  assert.deepEqual(await queued, { type: 'queued', id: message.id });
+
+  const mailboxFile = join(resource.directory, 'identities.json.mailbox.json');
+  const persisted = JSON.parse(await readFile(mailboxFile, 'utf8'));
+  assert.equal(persisted.envelopes.length, 1);
+  assert.deepEqual(persisted.envelopes[0], {
+    from: senderInfo.number, to: recipientInfo.number, id: message.id,
+    cipherType: 3, body: message.body,
+    createdAt: persisted.envelopes[0].createdAt, expiresAt: persisted.envelopes[0].expiresAt,
+  });
+  assert.equal((await stat(mailboxFile)).mode & 0o777, 0o600);
+
+  await resource.server.close();
+  resource.server = await createSignalingServer({
+    dataFile: join(resource.directory, 'identities.json'), env: {}, heartbeatIntervalMs: 60_000,
+  });
+  const address = await resource.server.listen(0, '127.0.0.1');
+  resource.url = `ws://127.0.0.1:${address.port}/signal`;
+
+  const senderAgain = await openSocket(resource);
+  await register(senderAgain, token('a'), bundle(51, 0), 7);
+  const otherAccount = await openSocket(resource);
+  await register(otherAccount, token('c'), bundle(53, 0), 7);
+  const recipientAgain = await openSocket(resource);
+  const replay = waitFor(recipientAgain, (item) => item.type === 'envelope' && item.id === message.id);
+  await register(recipientAgain, token('b'), bundle(52, 0), 7);
+  assert.deepEqual(await replay, {
+    type: 'envelope', from: senderInfo.number, id: message.id,
+    cipherType: 3, body: message.body,
+  });
+
+  const unauthorized = await sendRequest(otherAccount, { type: 'delivery_ack', id: message.id },
+    (item) => item.type === 'error');
+  assert.deepEqual(unauthorized, { type: 'error', code: 'unauthorized', id: message.id });
+  const delivered = waitFor(senderAgain, (item) => item.type === 'delivered' && item.id === message.id);
+  recipientAgain.send(JSON.stringify({ type: 'delivery_ack', id: message.id }));
+  assert.deepEqual(await delivered, { type: 'delivered', id: message.id });
+
+  await resource.server.close();
+  resource.server = await createSignalingServer({
+    dataFile: join(resource.directory, 'identities.json'), env: {}, heartbeatIntervalMs: 60_000,
+  });
+  const restartedAddress = await resource.server.listen(0, '127.0.0.1');
+  resource.url = `ws://127.0.0.1:${restartedAddress.port}/signal`;
+  const senderAfterReceipt = await openSocket(resource);
+  const resumedReceipt = waitFor(senderAfterReceipt, (item) => item.type === 'delivered' && item.id === message.id);
+  await register(senderAfterReceipt, token('a'), bundle(51, 0), 7);
+  assert.deepEqual(await resumedReceipt, { type: 'delivered', id: message.id });
+  const duplicate = await sendRequest(senderAfterReceipt, message,
+    (item) => item.id === message.id && ['delivered', 'queued', 'error'].includes(item.type));
+  assert.deepEqual(duplicate, { type: 'delivered', id: message.id });
+  const afterReceipt = JSON.parse(await readFile(mailboxFile, 'utf8'));
+  assert.equal(afterReceipt.envelopes.length, 0);
+  assert.equal(afterReceipt.receipts.length, 1);
+  assert.equal(JSON.stringify(afterReceipt).includes(message.body), false);
+});
+
+test('persistent message limits enforce both per-recipient and global mailbox bounds', async () => {
+  const resource = await setup({ maxMailboxEntries: 2, maxMailboxPerUser: 1 });
+  const sender = await openSocket(resource);
+  const first = await openSocket(resource);
+  const second = await openSocket(resource);
+  const third = await openSocket(resource);
+  await register(sender, token('d'), bundle(54, 0), 7);
+  const firstInfo = await register(first, token('e'), bundle(55, 0), 7);
+  const secondInfo = await register(second, token('f'), bundle(56, 0), 7);
+  const thirdInfo = await register(third, token('0'), bundle(57, 0), 7);
+  await Promise.all([closeSocket(first), closeSocket(second), closeSocket(third)]);
+
+  const envelope = (to, id) => ({ type: 'envelope', to, id, cipherType: 2, body: base64(`cipher-${id}`) });
+  assert.equal((await sendRequest(sender, envelope(firstInfo.number, uuid(5_201)), (item) => item.type === 'queued')).type, 'queued');
+  assert.equal((await sendRequest(sender, envelope(firstInfo.number, uuid(5_202)), (item) => item.type === 'error')).code, 'mailbox_full');
+  assert.equal((await sendRequest(sender, envelope(secondInfo.number, uuid(5_203)), (item) => item.type === 'queued')).type, 'queued');
+  assert.equal((await sendRequest(sender, envelope(thirdInfo.number, uuid(5_204)), (item) => item.type === 'error')).code, 'mailbox_full');
+  const saved = JSON.parse(await readFile(join(resource.directory, 'identities.json.mailbox.json'), 'utf8'));
+  assert.equal(saved.envelopes.length, 2);
+});
+
+test('version-6 clients retain sent acknowledgements while their ciphertext is durably queued', async () => {
+  const resource = await setup();
+  const sender = await openSocket(resource);
+  const recipient = await openSocket(resource);
+  await register(sender, token('a'), bundle(68, 0));
+  const recipientInfo = await register(recipient, token('b'), bundle(69, 0));
+  const message = {
+    type: 'envelope', to: recipientInfo.number, id: uuid(5_251),
+    cipherType: 2, body: base64('legacy-client-ciphertext'),
+  };
+  const incoming = waitFor(recipient, (item) => item.type === 'envelope' && item.id === message.id);
+  const sent = waitFor(sender, (item) => item.type === 'sent' && item.id === message.id);
+  sender.send(JSON.stringify(message));
+  assert.deepEqual(await sent, { type: 'sent', id: message.id });
+  await incoming;
+  assert.equal(JSON.parse(await readFile(join(resource.directory, 'identities.json.mailbox.json'), 'utf8')).envelopes.length, 1);
+  assert.deepEqual(await sendRequest(recipient, { type: 'delivery_ack', id: message.id },
+    (item) => item.type === 'error'), { type: 'error', code: 'invalid_message', id: message.id });
+});
+
+test('expired mailbox ciphertext is pruned on restart without being delivered', async () => {
+  const resource = await setup({ mailboxTtlMs: 80 });
+  const sender = await openSocket(resource);
+  const recipient = await openSocket(resource);
+  await register(sender, token('1'), bundle(58, 0), 7);
+  const recipientInfo = await register(recipient, token('2'), bundle(59, 0), 7);
+  await closeSocket(recipient);
+  const message = { type: 'envelope', to: recipientInfo.number, id: uuid(5_301), cipherType: 2, body: base64('expires') };
+  const queued = waitFor(sender, (item) => item.type === 'queued');
+  sender.send(JSON.stringify(message));
+  await queued;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  await resource.server.close();
+  resource.server = await createSignalingServer({
+    dataFile: join(resource.directory, 'identities.json'), env: {}, heartbeatIntervalMs: 60_000,
+    mailboxTtlMs: 80,
+  });
+  const address = await resource.server.listen(0, '127.0.0.1');
+  resource.url = `ws://127.0.0.1:${address.port}/signal`;
+  const reconnect = await openSocket(resource);
+  const unexpectedDelivery = waitFor(reconnect, (item) => item.type === 'envelope', 100).then(() => true, () => false);
+  await register(reconnect, token('2'), bundle(59, 0), 7);
+  assert.equal(await unexpectedDelivery, false);
+  assert.deepEqual(JSON.parse(await readFile(join(resource.directory, 'identities.json.mailbox.json'), 'utf8')).envelopes, []);
+});
+
+test('push is optional, account-bound, and sends only generic offline wake-up data', async () => {
+  const disabled = await setup();
+  const disabledUser = await openSocket(disabled);
+  const registration = await register(disabledUser, token('3'), bundle(60, 0), 7);
+  assert.equal(registration.pushEnabled, false);
+  assert.deepEqual(await sendRequest(disabledUser, {
+    type: 'push_register', token: 'fcm-device-token-0123456789abcdef',
+  }, (item) => item.type === 'push_registered'), { type: 'push_registered', pushEnabled: false });
+  assert.deepEqual(await sendRequest(disabledUser, {
+    type: 'push_register', number: registration.number, token: 'fcm-device-token-0123456789abcdef',
+  }, (item) => item.type === 'error'), { type: 'error', code: 'invalid_message' });
+  await assert.rejects(readFile(join(disabled.directory, 'identities.json.push.json')),
+    (failure) => failure.code === 'ENOENT');
+
+  const pushes = [];
+  const enabled = await setup({ pushSender: async (pushToken, payload) => { pushes.push({ pushToken, payload }); } });
+  const sender = await openSocket(enabled);
+  const recipient = await openSocket(enabled);
+  await register(sender, token('4'), bundle(61, 0), 7);
+  const recipientInfo = await register(recipient, token('5'), bundle(62, 0), 7);
+  const registeredPush = await sendRequest(recipient, {
+    type: 'push_register', token: 'fcm-device-token-0123456789abcdef',
+  }, (item) => item.type === 'push_registered');
+  assert.deepEqual(registeredPush, { type: 'push_registered', pushEnabled: true });
+  const pushFile = join(enabled.directory, 'identities.json.push.json');
+  assert.equal((await stat(pushFile)).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(await readFile(pushFile, 'utf8')).tokens[recipientInfo.number], 'fcm-device-token-0123456789abcdef');
+  await closeSocket(recipient);
+
+  const message = {
+    type: 'envelope', to: recipientInfo.number, id: uuid(5_401), cipherType: 3,
+    body: base64('private-ciphertext-not-in-push'),
+  };
+  const queued = waitFor(sender, (item) => item.type === 'queued' && item.id === message.id);
+  sender.send(JSON.stringify(message));
+  await queued;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0].pushToken, 'fcm-device-token-0123456789abcdef');
+  assert.deepEqual(pushes[0].payload, { kind: 'message', id: message.id, ttlMs: 24 * 60 * 60 * 1_000 });
+  assert.equal(JSON.stringify(pushes[0].payload).includes(message.body), false);
+  assert.equal(JSON.stringify(pushes[0].payload).includes('from'), false);
+});
+
+test('partial or unreadable FCM configuration fails closed instead of reporting push available', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'signal-fcm-config-'));
+  try {
+    await assert.rejects(createSignalingServer({
+      dataFile: join(directory, 'identities.json'), env: { FCM_PROJECT_ID: 'line-demo' },
+    }), /FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS must be configured together/);
+    await assert.rejects(createSignalingServer({
+      dataFile: join(directory, 'identities.json'),
+      env: { FCM_PROJECT_ID: 'line-demo', GOOGLE_APPLICATION_CREDENTIALS: join(directory, 'missing-service-account.json') },
+    }), /FCM configuration is invalid/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('FCM invalid-token responses remove the matching account token', async () => {
+  const resource = await setup({ pushSender: async () => {
+    const failure = new Error('provider failure');
+    failure.code = 'messaging/registration-token-not-registered';
+    throw failure;
+  } });
+  const sender = await openSocket(resource);
+  const recipient = await openSocket(resource);
+  await register(sender, token('c'), bundle(70, 0), 7);
+  const recipientInfo = await register(recipient, token('d'), bundle(71, 0), 7);
+  await sendRequest(recipient, { type: 'push_register', token: 'fcm-invalid-token-0123456789abcdef' },
+    (item) => item.type === 'push_registered');
+  await closeSocket(recipient);
+  const queued = waitFor(sender, (item) => item.type === 'queued');
+  sender.send(JSON.stringify({ type: 'envelope', to: recipientInfo.number, id: uuid(5_451),
+    cipherType: 2, body: base64('retry-after-push-failure') }));
+  await queued;
+  let storedTokens;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    storedTokens = JSON.parse(await readFile(join(resource.directory, 'identities.json.push.json'), 'utf8')).tokens;
+    if (Object.keys(storedTokens).length === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(storedTokens, {});
+});
+
+test('offline calls require a registered push token, create the room first, and can be accepted on reconnect', async () => {
+  const pushes = [];
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    pushSender: async (pushToken, payload) => { pushes.push({ pushToken, payload }); },
+    createRoom: async () => {},
+    deleteRoom: () => {},
+  });
+  const owner = await openSocket(resource);
+  const member = await openSocket(resource);
+  const ownerInfo = await register(owner, token('6'), bundle(63, 0), 7);
+  const memberInfo = await register(member, token('7'), bundle(64, 0), 7);
+  await sendRequest(member, { type: 'push_register', token: 'fcm-call-token-0123456789abcdef' },
+    (item) => item.type === 'push_registered');
+  await closeSocket(member);
+
+  const created = waitFor(owner, (item) => item.type === 'call_created');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  const call = await created;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0].payload.kind, 'call');
+  assert.equal(pushes[0].payload.id, call.callId);
+  assert.equal(pushes[0].payload.ttlMs, 45_000);
+  assert.equal(JSON.stringify(pushes[0].payload).includes(ownerInfo.number), false);
+
+  const ended = waitFor(owner, (item) => item.type === 'ended' && item.callId === call.callId);
+  owner.send(JSON.stringify({ type: 'leave_call', callId: call.callId }));
+  await ended;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(pushes.map((item) => item.payload.kind), ['call', 'call_ended']);
+
+  const createdAgain = waitFor(owner, (item) => item.type === 'call_created');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  const nextCall = await createdAgain;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pushes[2].payload.kind, 'call');
+  assert.equal(pushes[2].payload.id, nextCall.callId);
+
+  const reconnectedMember = await openSocket(resource);
+  const invitation = waitFor(reconnectedMember, (item) => item.type === 'incoming' && item.callId === nextCall.callId);
+  await register(reconnectedMember, token('7'), bundle(64, 0), 7);
+  assert.equal((await invitation).owner, ownerInfo.number);
+  const memberGrant = await sendRequest(reconnectedMember, { type: 'join_call', callId: nextCall.callId },
+    (item) => item.type === 'room_grant' || item.type === 'error');
+  assert.equal(memberGrant.type, 'room_grant');
+  const ownerGrant = await sendRequest(owner, { type: 'join_call', callId: nextCall.callId },
+    (item) => item.type === 'room_grant' || item.type === 'error');
+  assert.equal(ownerGrant.type, 'room_grant');
+});
+
+test('blocked accounts cannot receive queued messages or offline call invitations', async () => {
+  const resource = await setup({ env: adminEnv() });
+  const admin = await openSocket(resource);
+  const sender = await openSocket(resource);
+  const target = await openSocket(resource);
+  await register(admin, token('8'), bundle(65, 0));
+  await register(sender, token('9'), bundle(66, 0), 7);
+  const targetInfo = await register(target, token('0'), bundle(67, 0), 7);
+  assert.equal((await adminLogin(admin)).ok, true);
+  await adminAction(admin, 'block', { number: targetInfo.number });
+
+  const message = await sendRequest(sender, {
+    type: 'envelope', to: targetInfo.number, id: uuid(5_501), cipherType: 2, body: base64('blocked-ciphertext'),
+  }, (item) => item.type === 'error');
+  assert.equal(message.code, 'blocked');
+  const call = await sendRequest(sender, { type: 'create_call', members: [targetInfo.number] },
+    (item) => item.type === 'error');
+  assert.equal(call.code, 'blocked');
+  const mailboxFile = join(resource.directory, 'identities.json.mailbox.json');
+  assert.deepEqual(JSON.parse(await readFile(mailboxFile, 'utf8')).envelopes, []);
 });
 
 test('group calls issue verifiable, short-lived, room-scoped microphone-only LiveKit grants', async () => {
   const deletedRooms = [];
-  const resource = await setup({ env: LIVEKIT_ENV, ringingTimeoutMs: 300, deleteRoom: (room) => deletedRooms.push(room) });
+  const createdRooms = [];
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    ringingTimeoutMs: 300,
+    createRoom: async (roomOptions) => { createdRooms.push(roomOptions); },
+    deleteRoom: (room) => deletedRooms.push(room),
+  });
   const owner = await openSocket(resource);
   const memberA = await openSocket(resource);
   const memberB = await openSocket(resource);
@@ -275,6 +594,7 @@ test('group calls issue verifiable, short-lived, room-scoped microphone-only Liv
   assert.equal(call.owner, ownerInfo.number);
   assert.deepEqual(incomingA, { type: 'incoming', callId: call.callId, room: call.room, members: call.members, owner: call.owner });
   assert.deepEqual(incomingB, incomingA);
+  assert.deepEqual(createdRooms, [{ name: call.room, maxParticipants: 3 }]);
 
   const unauthorized = await sendRequest(outsider, { type: 'join_call', callId: call.callId }, (item) => item.type === 'error');
   assert.equal(unauthorized.code, 'unauthorized');
@@ -318,28 +638,138 @@ test('group calls issue verifiable, short-lived, room-scoped microphone-only Liv
   assert.deepEqual(deletedRooms, [call.room]);
 });
 
-test('missing LiveKit configuration never creates a placeholder token', async () => {
-  const resource = await setup();
+test('failed room provisioning announces no call, cleans up, and releases the roster', async () => {
+  const createdRooms = [];
+  let reportDeletion;
+  const deletionReported = new Promise((resolve) => { reportDeletion = resolve; });
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    createRoom: async (options) => {
+      createdRooms.push(options);
+      if (createdRooms.length === 1) throw new Error('provisioning failed');
+    },
+    deleteRoom: (room) => reportDeletion(room),
+  });
+  const owner = await openSocket(resource);
+  const member = await openSocket(resource);
+  await register(owner, token('a'), bundle(71, 0));
+  const memberInfo = await register(member, token('b'), bundle(72, 0));
+
+  const failure = waitFor(owner, (message) => message.type === 'error');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  assert.equal((await failure).code, 'media_unavailable');
+  const firstRoom = await deletionReported;
+  assert.equal(firstRoom, createdRooms[0].name);
+  assert.deepEqual(createdRooms[0], { name: firstRoom, maxParticipants: 2 });
+  assert.equal(await waitFor(member, (message) => message.type === 'incoming', 100).then(() => true, () => false), false);
+
+  const created = waitFor(owner, (message) => message.type === 'call_created');
+  const incoming = waitFor(member, (message) => message.type === 'incoming');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  const [call] = await Promise.all([created, incoming]);
+  assert.deepEqual(createdRooms[1], { name: call.room, maxParticipants: 2 });
+});
+
+test('calls disabled during room provisioning cannot announce or revive the call', async () => {
+  let releaseProvisioning;
+  let reportProvisioningStarted;
+  let reportDeletion;
+  const provisioningGate = new Promise((resolve) => { releaseProvisioning = resolve; });
+  const provisioningStarted = new Promise((resolve) => { reportProvisioningStarted = resolve; });
+  const deletionReported = new Promise((resolve) => { reportDeletion = resolve; });
+  let roomName;
+  const resource = await setup({
+    env: { ...LIVEKIT_ENV, ...adminEnv() },
+    createRoom: async (options) => {
+      roomName = options.name;
+      assert.equal(options.maxParticipants, 2);
+      reportProvisioningStarted();
+      await provisioningGate;
+    },
+    deleteRoom: (room) => reportDeletion(room),
+  });
+  const owner = await openSocket(resource);
+  const member = await openSocket(resource);
+  await register(owner, token('c'), bundle(73, 0));
+  const memberInfo = await register(member, token('d'), bundle(74, 0));
+  assert.equal((await adminLogin(owner)).ok, true);
+
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  await provisioningStarted;
+  assert.equal((await adminAction(owner, 'update_settings', { settings: { callsEnabled: false } })).ok, true);
+  const callCreated = waitFor(owner, (message) => message.type === 'call_created', 150).then(() => true, () => false);
+  const invited = waitFor(member, (message) => message.type === 'incoming', 150).then(() => true, () => false);
+  releaseProvisioning();
+  assert.equal(await deletionReported, roomName);
+  assert.equal(await callCreated, false);
+  assert.equal(await invited, false);
+
+  assert.match(roomName, /^line-[0-9a-f-]{36}$/i);
+  await adminAction(owner, 'update_settings', { settings: { callsEnabled: true } });
+  const staleGrant = await sendRequest(owner, { type: 'join_call', callId: roomName.slice('line-'.length) },
+    (message) => message.type === 'error');
+  assert.equal(staleGrant.code, 'unauthorized');
+});
+
+for (const [kind, env] of [
+  ['missing', {}],
+  ['insecure', { ...LIVEKIT_ENV, LIVEKIT_URL: 'ws://rtc.example.test' }],
+]) {
+test(`${kind} LiveKit configuration never creates a placeholder token`, async () => {
+  const resource = await setup({ env });
   const owner = await openSocket(resource);
   const member = await openSocket(resource);
   const ownerInfo = await register(owner, token('6'), bundle(25, 0));
   const memberInfo = await register(member, token('7'), bundle(26, 0));
-  const created = waitFor(owner, (item) => item.type === 'call_created');
-  const incoming = waitFor(member, (item) => item.type === 'incoming');
-  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
-  const call = await created;
-  await incoming;
-  const result = await sendRequest(owner, { type: 'join_call', callId: call.callId }, (item) => item.type === 'error');
-  assert.deepEqual(result, { type: 'error', code: 'media_not_configured', callId: call.callId });
-  const ended = waitFor(member, (item) => item.type === 'ended');
-  member.send(JSON.stringify({ type: 'decline_call', callId: call.callId }));
-  assert.deepEqual(await ended, { type: 'ended', callId: call.callId, reason: 'declined' });
+  assert.equal(ownerInfo.mediaReady, false);
+  const result = await sendRequest(owner, { type: 'create_call', members: [memberInfo.number] },
+    (item) => item.type === 'error');
+  assert.deepEqual(result, { type: 'error', code: 'media_not_configured' });
+  assert.equal(await waitFor(member, (item) => item.type === 'incoming', 100).then(() => true, () => false), false);
   assert.match(ownerInfo.number, /^\d{8}$/);
+});
+}
+
+test('LiveKit media configuration requires a clean WSS root URL and valid host', async () => {
+  const invalidUrls = [
+    'ws://rtc.example.test',
+    'https://rtc.example.test',
+    'wss:///signal',
+    'wss://user@rtc.example.test',
+    'wss://user:pass@rtc.example.test',
+    'wss://@rtc.example.test',
+    'wss://rtc.example.test?token=secret',
+    'wss://rtc.example.test?',
+    'wss://rtc.example.test#fragment',
+    'wss://rtc.example.test#',
+    'wss://rtc.example.test/room',
+    'wss://bad_host.example.test',
+    'wss://-bad.example.test',
+    'wss://example..test',
+    'wss://rtc.example.test:0',
+    'wss://rtc.example.test:65536',
+  ];
+
+  for (const [index, LIVEKIT_URL] of invalidUrls.entries()) {
+    const resource = await setup({ env: { ...LIVEKIT_ENV, LIVEKIT_URL } });
+    const socket = await openSocket(resource);
+    const registered = await register(socket, token(String(index % 10)), bundle(50 + index, 0));
+    assert.equal(registered.mediaReady, false, `Unexpectedly accepted ${LIVEKIT_URL}`);
+  }
+
+  const rootUrl = await setup({ env: { ...LIVEKIT_ENV, LIVEKIT_URL: 'wss://rtc.example.test/' } });
+  const socket = await openSocket(rootUrl);
+  assert.equal((await register(socket, token('8'), bundle(70, 0))).mediaReady, true);
 });
 
 test('decline, disconnect, and unanswered timeout end the entire fixed roster', async () => {
   const deletedRooms = [];
-  const resource = await setup({ deleteRoom: (room) => deletedRooms.push(room), ringingTimeoutMs: 500 });
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    createRoom: async () => {},
+    deleteRoom: (room) => deletedRooms.push(room),
+    ringingTimeoutMs: 500,
+  });
   const owner = await openSocket(resource);
   const member = await openSocket(resource);
   const memberInfo = await register(member, token('8'), bundle(27, 0));
@@ -362,7 +792,7 @@ test('decline, disconnect, and unanswered timeout end the entire fixed roster', 
   await incomingAgain;
   const disconnected = waitFor(owner, (item) => item.type === 'ended' && item.callId === disconnectedCall.callId);
   await closeSocket(memberAgain);
-  assert.deepEqual(await disconnected, { type: 'ended', callId: disconnectedCall.callId, reason: 'disconnected' });
+  assert.deepEqual(await disconnected, { type: 'ended', callId: disconnectedCall.callId, reason: 'timeout' });
   assert.deepEqual(deletedRooms, [call.room, disconnectedCall.room]);
 });
 
@@ -576,7 +1006,7 @@ test('admin settings persist and enforce chat, call size, calls, and new-registr
 });
 
 test('admin blocking ends calls, disconnects accounts, persists the list, and prevents reconnection', async () => {
-  const resource = await setup({ env: adminEnv() });
+  const resource = await setup({ env: { ...LIVEKIT_ENV, ...adminEnv() }, createRoom: async () => {}, deleteRoom: () => {} });
   const admin = await openSocket(resource);
   const target = await openSocket(resource);
   const adminInfo = await register(admin, token('6'), bundle(36, 0));

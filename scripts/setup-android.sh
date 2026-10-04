@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then
+  export PATH="$JAVA_HOME/bin:$PATH"
+fi
 if ! command -v java >/dev/null; then
   echo 'Java 21 required. Install a JDK 21 or set JAVA_HOME.' >&2
+  exit 1
+fi
+java_major="$(java -version 2>&1 | sed -nE '1s/.*version "([0-9]+).*/\1/p')"
+if [[ "$java_major" != 21 ]]; then
+  echo 'Java 21 required. Select a JDK 21 with JAVA_HOME.' >&2
   exit 1
 fi
 export ANDROID_HOME="${ANDROID_HOME:-$PWD/.android-sdk}"

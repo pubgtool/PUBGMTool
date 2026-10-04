@@ -28,11 +28,18 @@ import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Audio-only LiveKit room engine. The caller is responsible for distributing the room key securely. */
+interface CallMediaEngine {
+    suspend fun connect(url: String, token: String, roomKey: ByteArray, http: OkHttpClient, highQuality: Boolean = true)
+    suspend fun setMuted(muted: Boolean)
+    fun setSpeaker(enabled: Boolean)
+    suspend fun disconnect()
+}
+
 class LiveCallEngine(
     context: Context,
     private val scope: CoroutineScope,
     private val onEvent: (MediaEvent) -> Unit,
-) {
+) : CallMediaEngine {
     private class Session(
         val room: Room,
         val keyProvider: BaseKeyProvider,
@@ -48,12 +55,12 @@ class LiveCallEngine(
     @Volatile private var speakerphoneEnabled = false
 
     /** Connect and publish microphone audio. `roomKey` must be the same device-generated key for all room members. */
-    suspend fun connect(
+    override suspend fun connect(
         url: String,
         token: String,
         roomKey: ByteArray,
         http: OkHttpClient,
-        highQuality: Boolean = true,
+        highQuality: Boolean,
     ) {
         LiveKit.loggingLevel = LoggingLevel.OFF
         LiveKit.enableWebRTCLogging = false
@@ -120,7 +127,7 @@ class LiveCallEngine(
         }
     }
 
-    suspend fun setMuted(muted: Boolean) {
+    override suspend fun setMuted(muted: Boolean) {
         val call = session ?: return
         try {
             if (!call.room.localParticipant.setMicrophoneEnabled(!muted)) {
@@ -131,12 +138,12 @@ class LiveCallEngine(
         }
     }
 
-    fun setSpeaker(enabled: Boolean) {
+    override fun setSpeaker(enabled: Boolean) {
         speakerphoneEnabled = enabled
         session?.room?.audioSwitchHandler?.let { configureAudio(it, enabled) }
     }
 
-    suspend fun disconnect() {
+    override suspend fun disconnect() {
         session?.let {
             stop(it, MediaEvent.Disconnected(LOCAL_DISCONNECT), disconnectRoom = true)
         }

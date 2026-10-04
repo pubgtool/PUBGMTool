@@ -1,6 +1,7 @@
-import { createHash, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, createPrivateKey, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
@@ -13,6 +14,15 @@ const MAX_PAYLOAD = 64 * 1024;
 const MAX_ENVELOPE_BYTES = 24 * 1024;
 const MAX_BUFFERED_BYTES = 512 * 1024;
 const MAX_PRE_KEYS = 1_000;
+const DEFAULT_MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+const DEFAULT_MAX_MAILBOX_ENTRIES = 1_000;
+const DEFAULT_MAX_MAILBOX_PER_USER = 100;
+const DEFAULT_MAX_RECEIPTS = 5_000;
+const DEFAULT_MAX_INBOX_SYNCS_PER_WINDOW = 10;
+const DEFAULT_INBOX_SYNC_WINDOW_MS = 60_000;
+const MAX_PUSH_TOKEN_BYTES = 4_096;
+const MESSAGE_PUSH_TTL_MS = 24 * 60 * 60 * 1_000;
+const CALL_PUSH_TTL_MS = 45_000;
 const DEFAULT_ADMIN_SETTINGS = Object.freeze({
   callsEnabled: true,
   chatEnabled: true,
@@ -143,6 +153,195 @@ async function saveIdentities(dataFile, identities) {
   }
 }
 
+async function atomicWriteJson(dataFile, document) {
+  await mkdir(dirname(dataFile), { recursive: true });
+  const temporaryFile = `${dataFile}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporaryFile, 'wx', 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(document, null, 2)}\n`, 'utf8');
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporaryFile, dataFile);
+    try {
+      const directory = await open(dirname(dataFile), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    } catch {
+      // Some filesystems do not allow syncing directory handles.
+    }
+  } catch (error) {
+    await unlink(temporaryFile).catch(() => {});
+    throw error;
+  }
+}
+
+function mailboxKey(from, id) {
+  return `${from}:${id}`;
+}
+
+function envelopeDigest(cipherType, body) {
+  return createHash('sha256').update(`${cipherType}:${body}`, 'utf8').digest('hex');
+}
+
+function validateMailboxEnvelope(envelope, numberOwners, now, ttlMs) {
+  if (!isObject(envelope) || !hasOnlyKeys(envelope, ['from', 'to', 'id', 'cipherType', 'body', 'createdAt', 'expiresAt'])
+    || !NUMBER_PATTERN.test(envelope.from) || !NUMBER_PATTERN.test(envelope.to)
+    || !numberOwners.has(envelope.from) || !numberOwners.has(envelope.to)
+    || !UUID_PATTERN.test(envelope.id) || ![2, 3].includes(envelope.cipherType)
+    || !validBase64(envelope.body, MAX_ENVELOPE_BYTES)
+    || !Number.isSafeInteger(envelope.createdAt) || !Number.isSafeInteger(envelope.expiresAt)
+    || envelope.expiresAt <= now || envelope.expiresAt <= envelope.createdAt
+    || envelope.expiresAt - envelope.createdAt > ttlMs) return undefined;
+  return { ...envelope };
+}
+
+async function loadMailbox(mailboxFile, numberOwners, blockedNumbers, now, ttlMs, maxEntries, maxPerUser, maxReceipts) {
+  let text;
+  try {
+    text = await readFile(mailboxFile, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return { envelopes: new Map(), receipts: new Map(), dirty: false };
+    throw error;
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw new Error(`Mailbox store is not valid JSON: ${mailboxFile}`);
+  }
+  if (document?.version !== 1 || !Array.isArray(document.envelopes) || !Array.isArray(document.receipts)) {
+    throw new Error(`Mailbox store has an unsupported format: ${mailboxFile}`);
+  }
+  const envelopes = new Map();
+  const receipts = new Map();
+  const recipientCounts = new Map();
+  let dirty = false;
+  for (const raw of document.envelopes) {
+    const envelope = validateMailboxEnvelope(raw, numberOwners, now, ttlMs);
+    if (!envelope) {
+      if (isObject(raw) && Number.isSafeInteger(raw.expiresAt) && raw.expiresAt <= now) {
+        dirty = true;
+        continue;
+      }
+      throw new Error(`Mailbox store contains an invalid message: ${mailboxFile}`);
+    }
+    if (blockedNumbers.has(envelope.from) || blockedNumbers.has(envelope.to)) {
+      dirty = true;
+      continue;
+    }
+    const key = mailboxKey(envelope.from, envelope.id);
+    if (envelopes.has(key)) throw new Error(`Mailbox store contains duplicate message IDs: ${mailboxFile}`);
+    recipientCounts.set(envelope.to, (recipientCounts.get(envelope.to) ?? 0) + 1);
+    envelopes.set(key, envelope);
+  }
+  const seenReceipts = new Set();
+  for (const receipt of document.receipts) {
+    const valid = isObject(receipt) && hasOnlyKeys(receipt, ['from', 'to', 'id', 'cipherType', 'cipherHash', 'createdAt', 'expiresAt'])
+      && NUMBER_PATTERN.test(receipt.from) && NUMBER_PATTERN.test(receipt.to)
+      && numberOwners.has(receipt.from) && numberOwners.has(receipt.to)
+      && UUID_PATTERN.test(receipt.id) && [2, 3].includes(receipt.cipherType)
+      && /^[a-f0-9]{64}$/.test(receipt.cipherHash) && Number.isSafeInteger(receipt.createdAt)
+      && Number.isSafeInteger(receipt.expiresAt) && receipt.expiresAt > now
+      && receipt.expiresAt > receipt.createdAt && receipt.expiresAt - receipt.createdAt <= ttlMs;
+    if (!valid) {
+      if (isObject(receipt) && Number.isSafeInteger(receipt.expiresAt) && receipt.expiresAt <= now) {
+        dirty = true;
+        continue;
+      }
+      throw new Error(`Mailbox store contains an invalid delivery receipt: ${mailboxFile}`);
+    }
+    if (blockedNumbers.has(receipt.from) || blockedNumbers.has(receipt.to)) {
+      dirty = true;
+      continue;
+    }
+    const key = mailboxKey(receipt.from, receipt.id);
+    if (seenReceipts.has(key)) throw new Error(`Mailbox store contains duplicate delivery receipts: ${mailboxFile}`);
+    seenReceipts.add(key);
+    receipts.set(key, { ...receipt });
+  }
+  if (envelopes.size > maxEntries || receipts.size > maxReceipts
+    || [...recipientCounts.values()].some((count) => count > maxPerUser)) {
+    throw new Error(`Mailbox store exceeds configured limits: ${mailboxFile}`);
+  }
+  return { envelopes, receipts, dirty };
+}
+
+async function loadPushTokens(pushFile, numberOwners, blockedNumbers) {
+  let text;
+  try {
+    text = await readFile(pushFile, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return { tokens: new Map(), dirty: false };
+    throw error;
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw new Error(`Push token store is not valid JSON: ${pushFile}`);
+  }
+  if (document?.version !== 1 || !isObject(document.tokens)) {
+    throw new Error(`Push token store has an unsupported format: ${pushFile}`);
+  }
+  const tokens = new Map();
+  let dirty = false;
+  for (const [number, token] of Object.entries(document.tokens)) {
+    if (!NUMBER_PATTERN.test(number) || !numberOwners.has(number)
+      || typeof token !== 'string' || Buffer.byteLength(token, 'utf8') < 20
+      || Buffer.byteLength(token, 'utf8') > MAX_PUSH_TOKEN_BYTES || /[\u0000-\u0020\u007f]/.test(token)) {
+      throw new Error(`Push token store contains an invalid or unknown account: ${pushFile}`);
+    }
+    if (blockedNumbers.has(number)) {
+      dirty = true;
+      continue;
+    }
+    tokens.set(number, token);
+  }
+  return { tokens, dirty };
+}
+
+async function createPushSender(env, options) {
+  if (options.pushSender) return { pushSender: options.pushSender, pushConfigured: true };
+  const projectId = typeof env.FCM_PROJECT_ID === 'string' ? env.FCM_PROJECT_ID.trim() : '';
+  const credentialsPath = typeof env.GOOGLE_APPLICATION_CREDENTIALS === 'string'
+    ? env.GOOGLE_APPLICATION_CREDENTIALS.trim() : '';
+  if (!projectId && !credentialsPath) return { pushSender: undefined, pushConfigured: false };
+  if (!projectId || !credentialsPath) {
+    throw new Error('FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS must be configured together');
+  }
+  try {
+    const credentialText = await readFile(credentialsPath, 'utf8');
+    const serviceAccount = JSON.parse(credentialText);
+    if (serviceAccount?.type !== 'service_account' || typeof serviceAccount.client_email !== 'string'
+      || typeof serviceAccount.private_key !== 'string' || serviceAccount.private_key.length === 0) {
+      throw new Error('invalid service account');
+    }
+    createPrivateKey(serviceAccount.private_key);
+    const [{ cert, getApps, initializeApp }, { getMessaging }] = await Promise.all([
+      import('firebase-admin/app'), import('firebase-admin/messaging'),
+    ]);
+    const appName = 'line-signaling';
+    const app = getApps().find((candidate) => candidate.name === appName)
+      ?? initializeApp({ credential: cert(serviceAccount), projectId }, appName);
+    const messaging = getMessaging(app);
+    return {
+      pushConfigured: true,
+      pushSender: (token, payload) => messaging.send({
+        token,
+        data: { kind: payload.kind, id: payload.id },
+        android: {
+          priority: 'high',
+          ttl: Math.max(1, payload.ttlMs),
+        },
+      }),
+    };
+  } catch {
+    throw new Error('FCM configuration is invalid; verify the project ID and service-account file');
+  }
+}
+
 function consumeRateLimit(map, key, { limit, windowMs, now = Date.now() }) {
   let bucket = map.get(key);
   if (!bucket || now - bucket.start >= windowMs) {
@@ -236,6 +435,16 @@ async function saveAdminState(dataFile, state) {
   }
 }
 
+function validMediaHostname(hostname) {
+  const ipAddress = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (isIP(ipAddress)) return true;
+  if (hostname.length > 253) return false;
+  return hostname.split('.').every((label) => label.length <= 63
+    && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+}
+
 function buildMediaConfig(env) {
   const value = env.LIVEKIT_URL?.trim();
   const apiKey = env.LIVEKIT_API_KEY?.trim();
@@ -244,10 +453,11 @@ function buildMediaConfig(env) {
 
   try {
     const url = new URL(value);
-    if (!['wss:', 'ws:'].includes(url.protocol) || !url.hostname || url.username || url.password
-      || url.search || url.hash || url.pathname !== '/') return undefined;
+    const authority = /^wss:\/\/([^/?#]*)/i.exec(value)?.[1];
+    if (url.protocol !== 'wss:' || !authority || authority.includes('@') || !validMediaHostname(url.hostname)
+      || url.port === '0' || url.pathname !== '/' || value.includes('?') || value.includes('#')) return undefined;
     const mediaUrl = url.origin;
-    const apiUrl = mediaUrl.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:');
+    const apiUrl = mediaUrl.replace(/^wss:/i, 'https:');
     return { mediaUrl, apiUrl, apiKey, apiSecret };
   } catch {
     return undefined;
@@ -274,7 +484,11 @@ export async function createSignalingServer(options = {}) {
   const defaultDataFile = fileURLToPath(new URL('../data/identities.json', import.meta.url));
   const dataFile = resolve(options.dataFile ?? env.DATA_FILE ?? defaultDataFile);
   const adminDataFile = resolve(options.adminDataFile ?? env.ADMIN_DATA_FILE ?? `${dataFile}.admin.json`);
-  if (adminDataFile === dataFile) throw new Error('ADMIN_DATA_FILE must be separate from DATA_FILE');
+  const mailboxFile = resolve(options.mailboxFile ?? env.MAILBOX_FILE ?? `${dataFile}.mailbox.json`);
+  const pushTokenFile = resolve(options.pushTokenFile ?? env.PUSH_TOKEN_FILE ?? `${dataFile}.push.json`);
+  if (new Set([dataFile, adminDataFile, mailboxFile, pushTokenFile]).size !== 4) {
+    throw new Error('Identity, admin, mailbox, and push-token stores must use separate files');
+  }
   const adminPasswordHash = parseAdminPasswordHash(env.ADMIN_PASSWORD_HASH);
   const adminSessionMs = options.adminSessionMs ?? 5 * 60_000;
   const adminRateWindowMs = options.adminRateWindowMs ?? 60_000;
@@ -289,8 +503,20 @@ export async function createSignalingServer(options = {}) {
   const maxMessagesPerSecond = options.maxMessagesPerSecond ?? 40;
   const maxRateLimitEntries = options.maxRateLimitEntries ?? 10_000;
   const maxPendingStoreOperations = options.maxPendingStoreOperations ?? 1_000;
-  const maxDedupEntries = options.maxDedupEntries ?? 50_000;
-  const dedupTtlMs = options.dedupTtlMs ?? 24 * 60 * 60 * 1_000;
+  const mailboxTtlMs = options.mailboxTtlMs ?? DEFAULT_MAILBOX_TTL_MS;
+  const maxMailboxEntries = options.maxMailboxEntries ?? DEFAULT_MAX_MAILBOX_ENTRIES;
+  const maxMailboxPerUser = options.maxMailboxPerUser ?? DEFAULT_MAX_MAILBOX_PER_USER;
+  const maxReceiptEntries = options.maxReceiptEntries ?? DEFAULT_MAX_RECEIPTS;
+  const maxInboxSyncsPerWindow = options.maxInboxSyncsPerWindow ?? DEFAULT_MAX_INBOX_SYNCS_PER_WINDOW;
+  const inboxSyncWindowMs = options.inboxSyncWindowMs ?? DEFAULT_INBOX_SYNC_WINDOW_MS;
+  if (!Number.isSafeInteger(mailboxTtlMs) || mailboxTtlMs < 1 || mailboxTtlMs > DEFAULT_MAILBOX_TTL_MS
+    || !Number.isSafeInteger(maxMailboxEntries) || maxMailboxEntries < 1 || maxMailboxEntries > DEFAULT_MAX_MAILBOX_ENTRIES
+    || !Number.isSafeInteger(maxMailboxPerUser) || maxMailboxPerUser < 1 || maxMailboxPerUser > DEFAULT_MAX_MAILBOX_PER_USER
+    || !Number.isSafeInteger(maxReceiptEntries) || maxReceiptEntries < 1 || maxReceiptEntries > DEFAULT_MAX_RECEIPTS
+    || !Number.isSafeInteger(maxInboxSyncsPerWindow) || maxInboxSyncsPerWindow < 1 || maxInboxSyncsPerWindow > 100
+    || !Number.isSafeInteger(inboxSyncWindowMs) || inboxSyncWindowMs < 1_000 || inboxSyncWindowMs > 60_000) {
+    throw new Error('Invalid mailbox limits');
+  }
   const registrationTimeoutMs = options.registrationTimeoutMs ?? 10_000;
   const ringingTimeoutMs = options.ringingTimeoutMs ?? 45_000;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000;
@@ -305,13 +531,29 @@ export async function createSignalingServer(options = {}) {
   const memberships = new Map();
   const calls = new Map();
   const registrationRates = new Map();
+  const inboxSyncRates = new Map();
   const adminLoginRates = new Map();
   const adminEvents = [];
   let pendingAdminLogins = 0;
   let adminSettings = storedAdminState.settings;
   let blockedNumbers = new Set(storedAdminState.blockedNumbers);
   const startedAt = Date.now();
-  const deliveredEnvelopes = new Map();
+  let mailbox = await loadMailbox(mailboxFile, numberOwners, blockedNumbers, Date.now(), mailboxTtlMs,
+    maxMailboxEntries, maxMailboxPerUser, maxReceiptEntries);
+  if (mailbox.dirty) {
+    await atomicWriteJson(mailboxFile, {
+      version: 1,
+      envelopes: [...mailbox.envelopes.values()],
+      receipts: [...mailbox.receipts.values()],
+    });
+  }
+  const storedPushTokens = await loadPushTokens(pushTokenFile, numberOwners, blockedNumbers);
+  let pushTokens = storedPushTokens.tokens;
+  if (storedPushTokens.dirty) {
+    await atomicWriteJson(pushTokenFile, { version: 1, tokens: Object.fromEntries(pushTokens) });
+  }
+  const pushConfig = await createPushSender(env, options);
+  const { pushSender, pushConfigured } = pushConfig;
   const mediaConfig = buildMediaConfig(env);
   const tokenIssuer = options.tokenIssuer ?? (async ({ identity, room, apiKey, apiSecret }) => {
     const token = new AccessToken(apiKey, apiSecret, { identity, ttl: 120 });
@@ -325,9 +567,10 @@ export async function createSignalingServer(options = {}) {
     return token.toJwt();
   });
   let roomService;
-  if (mediaConfig && !options.deleteRoom) {
+  if (mediaConfig && (!options.createRoom || !options.deleteRoom)) {
     roomService = new RoomServiceClient(mediaConfig.apiUrl, mediaConfig.apiKey, mediaConfig.apiSecret);
   }
+  const createRoom = options.createRoom ?? (roomService ? (roomOptions) => roomService.createRoom(roomOptions) : undefined);
   const deleteRoom = options.deleteRoom ?? (roomService ? (room) => roomService.deleteRoom(room) : undefined);
 
   let storeQueue = Promise.resolve();
@@ -502,6 +745,7 @@ export async function createSignalingServer(options = {}) {
       blockedNumbers = nextBlocked;
       appendAdminEvent(action === 'block' ? 'number_blocked' : 'number_unblocked');
       if (action === 'block') {
+        await removeNumberData(number);
         endCallForNumber(number, 'blocked');
         const target = sessions.get(number);
         if (target) {
@@ -629,6 +873,116 @@ export async function createSignalingServer(options = {}) {
     storeQueue = task.finally(() => { pendingStoreOperations -= 1; });
   }
 
+  async function saveMailboxState(envelopes, receipts) {
+    const now = Date.now();
+    const nextEnvelopes = new Map([...envelopes].filter(([, envelope]) => envelope.expiresAt > now));
+    const nextReceipts = new Map([...receipts].filter(([, receipt]) => receipt.expiresAt > now));
+    while (nextReceipts.size > maxReceiptEntries) {
+      nextReceipts.delete(nextReceipts.keys().next().value);
+    }
+    await atomicWriteJson(mailboxFile, {
+      version: 1,
+      envelopes: [...nextEnvelopes.values()],
+      receipts: [...nextReceipts.values()],
+    });
+    mailbox = { envelopes: nextEnvelopes, receipts: nextReceipts, dirty: false };
+  }
+
+  async function savePushTokenState(tokens) {
+    await atomicWriteJson(pushTokenFile, { version: 1, tokens: Object.fromEntries(tokens) });
+    pushTokens = tokens;
+  }
+
+  function removeInvalidPushToken(number, token) {
+    const task = storeQueue.then(async () => {
+      if (pushTokens.get(number) !== token) return;
+      const next = new Map(pushTokens);
+      next.delete(number);
+      try {
+        await savePushTokenState(next);
+      } catch {
+        // A stale token is never used for blocked or re-registered accounts.
+      }
+    });
+    storeQueue = task.catch(() => {});
+  }
+
+  function sendPush(number, kind, id, ttlMs) {
+    const token = pushTokens.get(number);
+    if (!pushConfigured || !pushSender || !token || blockedNumbers.has(number)) return;
+    Promise.resolve().then(() => pushSender(token, { kind, id, ttlMs })).catch((failure) => {
+      if (['messaging/registration-token-not-registered', 'messaging/invalid-registration-token']
+        .includes(failure?.code)) removeInvalidPushToken(number, token);
+    });
+  }
+
+  async function removeNumberData(number) {
+    const envelopes = new Map([...mailbox.envelopes].filter(([, envelope]) => envelope.from !== number && envelope.to !== number));
+    const receipts = new Map([...mailbox.receipts].filter(([, receipt]) => receipt.from !== number && receipt.to !== number));
+    await saveMailboxState(envelopes, receipts);
+    const tokens = new Map(pushTokens);
+    tokens.delete(number);
+    await savePushTokenState(tokens);
+  }
+
+  function sendMailbox(session) {
+    if (!session.number || !adminSettings.chatEnabled || blockedNumbers.has(session.number)) return;
+    const now = Date.now();
+    for (const envelope of mailbox.envelopes.values()) {
+      if (envelope.to !== session.number || envelope.expiresAt <= now) continue;
+      const forwarded = send(session.socket, {
+        type: 'envelope', from: envelope.from, id: envelope.id,
+        cipherType: envelope.cipherType, body: envelope.body,
+      });
+      if (!forwarded) {
+        sendPush(session.number, 'message', envelope.id, MESSAGE_PUSH_TTL_MS);
+        return;
+      }
+    }
+  }
+
+  function sendDeliveryReceipts(session) {
+    if (session.protocolVersion < 7) return;
+    const now = Date.now();
+    for (const receipt of mailbox.receipts.values()) {
+      if (receipt.from === session.number && receipt.expiresAt > now) {
+        send(session.socket, { type: 'delivered', id: receipt.id });
+      }
+    }
+  }
+
+  function sendPendingCalls(session) {
+    if (!adminSettings.callsEnabled || blockedNumbers.has(session.number)) return;
+    const callId = memberships.get(session.number);
+    const call = callId && calls.get(callId);
+    if (call && call.owner !== session.number && !call.joined.has(session.number)) {
+      if (!send(session.socket, { type: 'incoming', callId: call.id, room: call.room, members: call.members, owner: call.owner })) {
+        sendPush(session.number, 'call', call.id, CALL_PUSH_TTL_MS);
+      }
+    }
+  }
+
+  function resumeSession(session) {
+    sendDeliveryReceipts(session);
+    sendMailbox(session);
+    sendPendingCalls(session);
+  }
+
+  async function registerPushToken(session, value) {
+    if (!pushConfigured || !pushSender) {
+      send(session.socket, { type: 'push_registered', pushEnabled: false });
+      return;
+    }
+    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') < 20
+      || Buffer.byteLength(value, 'utf8') > MAX_PUSH_TOKEN_BYTES || /[\u0000-\u0020\u007f]/.test(value)) {
+      return error(session.socket, 'invalid_push_token');
+    }
+    const tokens = new Map(pushTokens);
+    tokens.set(session.number, value);
+    await savePushTokenState(tokens);
+    send(session.socket, { type: 'push_registered', pushEnabled: true });
+  }
+
   function endCall(call, reason) {
     if (calls.get(call.id) !== call) return;
     calls.delete(call.id);
@@ -637,9 +991,17 @@ export async function createSignalingServer(options = {}) {
     for (const number of call.members) {
       if (memberships.get(number) === call.id) memberships.delete(number);
       const member = sessions.get(number);
-      if (member) send(member.socket, { type: 'ended', callId: call.id, reason });
+      const notified = call.announced && member
+        ? send(member.socket, { type: 'ended', callId: call.id, reason }) : false;
+      if (call.announced && !notified && number !== call.owner) {
+        sendPush(number, 'call_ended', call.id, CALL_PUSH_TTL_MS);
+      }
     }
-    if (deleteRoom) Promise.resolve(deleteRoom(call.room)).catch(() => {});
+    if (call.roomProvisioned) deleteRoomBestEffort(call.room);
+  }
+
+  function deleteRoomBestEffort(room) {
+    if (deleteRoom) Promise.resolve().then(() => deleteRoom(room)).catch(() => {});
   }
 
   function endCallForNumber(number, reason) {
@@ -652,7 +1014,9 @@ export async function createSignalingServer(options = {}) {
     if (!session || session.closed) return;
     session.closed = true;
     if (sessions.get(session.number) === session) sessions.delete(session.number);
-    endCallForNumber(session.number, 'disconnected');
+    const callId = memberships.get(session.number);
+    const call = callId && calls.get(callId);
+    if (call && (call.owner === session.number || call.joined.has(session.number))) endCall(call, 'disconnected');
   }
 
   function takeRegistrationSlot(ip) {
@@ -676,7 +1040,7 @@ export async function createSignalingServer(options = {}) {
     }
   }
 
-  async function register(session, tokenValue, bundle) {
+  async function register(session, tokenValue, bundle, protocolVersion = 6) {
     if (session.number) return error(session.socket, 'already_registered');
     if (!takeRegistrationSlot(session.ip)) return error(session.socket, 'rate_limited');
     if (typeof tokenValue !== 'string' || !TOKEN_PATTERN.test(tokenValue)) return error(session.socket, 'invalid_token');
@@ -724,16 +1088,20 @@ export async function createSignalingServer(options = {}) {
       cleanupSession(previous);
     }
     session.number = number;
+    session.protocolVersion = protocolVersion;
     sessions.set(number, session);
     clearTimeout(timers.get(session));
     appendAdminEvent('registration');
-    send(session.socket, {
+    const registered = {
       type: 'registered', number, mediaReady: Boolean(mediaConfig),
       callsEnabled: adminSettings.callsEnabled,
       chatEnabled: adminSettings.chatEnabled,
       registrationEnabled: adminSettings.registrationEnabled,
       maxParticipants: adminSettings.maxParticipants,
-    });
+    };
+    if (protocolVersion >= 7) registered.pushEnabled = Boolean(pushConfigured && pushTokens.has(number));
+    send(session.socket, registered);
+    resumeSession(session);
   }
 
   async function updateKeys(session, bundle) {
@@ -774,42 +1142,83 @@ export async function createSignalingServer(options = {}) {
     send(session.socket, { type: 'bundle', peer: message.to, requestId: message.requestId, bundle });
   }
 
-  function pruneDeliveredEnvelopes(now) {
-    for (const [key, expiresAt] of deliveredEnvelopes) {
-      if (expiresAt > now) break;
-      deliveredEnvelopes.delete(key);
-    }
-    while (deliveredEnvelopes.size > maxDedupEntries) {
-      deliveredEnvelopes.delete(deliveredEnvelopes.keys().next().value);
-    }
-  }
-
-  function relayEnvelope(session, message) {
+  async function relayEnvelope(session, message) {
     if (!adminSettings.chatEnabled) return error(session.socket, 'chat_disabled', { id: message.id });
     if (blockedNumbers.has(message.to)) return error(session.socket, 'blocked', { id: message.id });
-    const recipient = sessions.get(message.to);
-    if (!recipient || recipient.socket.readyState !== WebSocket.OPEN) {
-      return error(session.socket, 'offline', { id: message.id });
-    }
-
-    const now = Date.now();
-    pruneDeliveredEnvelopes(now);
+    if (!numberOwners.has(message.to)) return error(session.socket, 'not_found', { id: message.id });
     const key = `${session.number}:${message.id}`;
-    if (deliveredEnvelopes.has(key)) return send(session.socket, { type: 'sent', id: message.id });
-
-    deliveredEnvelopes.set(key, now + dedupTtlMs);
-    pruneDeliveredEnvelopes(now);
-    const forwarded = send(recipient.socket, {
-      type: 'envelope', from: session.number, id: message.id, cipherType: message.cipherType, body: message.body,
-    });
-    if (!forwarded) {
-      deliveredEnvelopes.delete(key);
-      return error(session.socket, 'offline', { id: message.id });
+    const now = Date.now();
+    const receipt = mailbox.receipts.get(key);
+    if (receipt?.expiresAt > now) {
+      if (receipt.to !== message.to || receipt.cipherType !== message.cipherType
+        || receipt.cipherHash !== envelopeDigest(message.cipherType, message.body)) {
+        return error(session.socket, 'id_conflict', { id: message.id });
+      }
+      return send(session.socket, { type: session.protocolVersion >= 7 ? 'delivered' : 'sent', id: message.id });
     }
-    send(session.socket, { type: 'sent', id: message.id });
+    const pending = mailbox.envelopes.get(key);
+    if (pending?.expiresAt > now) {
+      if (pending.to !== message.to || pending.cipherType !== message.cipherType || pending.body !== message.body) {
+        return error(session.socket, 'id_conflict', { id: message.id });
+      }
+      return send(session.socket, { type: session.protocolVersion >= 7 ? 'queued' : 'sent', id: message.id });
+    }
+    if ([...mailbox.envelopes.values(), ...mailbox.receipts.values()]
+      .some((item) => item.expiresAt > now && item.id === message.id)) {
+      return error(session.socket, 'id_conflict', { id: message.id });
+    }
+
+    const envelopes = new Map([...mailbox.envelopes].filter(([, item]) => item.expiresAt > now));
+    const receipts = new Map([...mailbox.receipts].filter(([, item]) => item.expiresAt > now));
+    if (envelopes.size >= maxMailboxEntries) return error(session.socket, 'mailbox_full', { id: message.id });
+    const recipientCount = [...envelopes.values()].filter((item) => item.to === message.to).length;
+    if (recipientCount >= maxMailboxPerUser) return error(session.socket, 'mailbox_full', { id: message.id });
+    const envelope = {
+      from: session.number, to: message.to, id: message.id,
+      cipherType: message.cipherType, body: message.body,
+      createdAt: now, expiresAt: now + mailboxTtlMs,
+    };
+    envelopes.set(key, envelope);
+    await saveMailboxState(envelopes, receipts);
+
+    send(session.socket, { type: session.protocolVersion >= 7 ? 'queued' : 'sent', id: message.id });
+    const recipient = sessions.get(message.to);
+    if (recipient && !recipient.closed && recipient.socket.readyState === WebSocket.OPEN) {
+      const forwarded = send(recipient.socket, {
+        type: 'envelope', from: envelope.from, id: envelope.id,
+        cipherType: envelope.cipherType, body: envelope.body,
+      });
+      if (!forwarded) sendPush(message.to, 'message', message.id, MESSAGE_PUSH_TTL_MS);
+    } else {
+      sendPush(message.to, 'message', message.id, MESSAGE_PUSH_TTL_MS);
+    }
   }
 
-  function createCall(session, members) {
+  async function acknowledgeDelivery(session, id) {
+    const entry = [...mailbox.envelopes].find(([, item]) => item.id === id && item.to === session.number);
+    if (!entry) return error(session.socket, 'unauthorized', { id });
+    const [key, envelope] = entry;
+    const now = Date.now();
+    const envelopes = new Map(mailbox.envelopes);
+    const receipts = new Map([...mailbox.receipts].filter(([, receipt]) => receipt.expiresAt > now));
+    envelopes.delete(key);
+    if (envelope.expiresAt <= now) {
+      await saveMailboxState(envelopes, receipts);
+      return error(session.socket, 'expired', { id });
+    }
+    receipts.set(key, {
+      from: envelope.from, to: envelope.to, id: envelope.id,
+      cipherType: envelope.cipherType, cipherHash: envelopeDigest(envelope.cipherType, envelope.body),
+      createdAt: now, expiresAt: now + mailboxTtlMs,
+    });
+    await saveMailboxState(envelopes, receipts);
+    const sender = sessions.get(envelope.from);
+    if (sender?.protocolVersion >= 7 && !sender.closed) {
+      send(sender.socket, { type: 'delivered', id: envelope.id });
+    }
+  }
+
+  async function createCall(session, members) {
     if (!adminSettings.callsEnabled) return error(session.socket, 'calls_disabled');
     if (!Array.isArray(members) || members.length < 1 || members.length > adminSettings.maxParticipants - 1
       || members.some((member) => typeof member !== 'string' || !NUMBER_PATTERN.test(member) || member === session.number)
@@ -817,23 +1226,67 @@ export async function createSignalingServer(options = {}) {
     if (memberships.has(session.number)) return error(session.socket, 'busy');
 
     for (const number of members) {
+      if (!numberOwners.has(number)) return error(session.socket, 'not_found', { to: number });
+      if (blockedNumbers.has(number)) return error(session.socket, 'blocked', { to: number });
       const target = sessions.get(number);
-      if (!target || target.closed || target.socket.readyState !== WebSocket.OPEN) return error(session.socket, 'offline', { to: number });
       if (memberships.has(number)) return error(session.socket, 'busy', { to: number });
+      if ((!target || target.closed || target.socket.readyState !== WebSocket.OPEN)
+        && (!pushConfigured || !pushTokens.has(number))) return error(session.socket, 'offline', { to: number });
     }
+    if (!mediaConfig) return error(session.socket, 'media_not_configured');
 
     const callId = randomUUID();
     const room = `line-${callId}`;
     const roster = [session.number, ...members];
-    const call = { id: callId, room, owner: session.number, members: roster, joined: new Set(), timer: undefined };
+    const call = {
+      id: callId, room, owner: session.number, members: roster, joined: new Set(), timer: undefined,
+      announced: false, roomProvisioned: false,
+    };
     calls.set(callId, call);
     for (const number of roster) memberships.set(number, callId);
     call.timer = setTimeout(() => endCall(call, 'timeout'), ringingTimeoutMs);
     call.timer.unref?.();
 
+    if (mediaConfig && createRoom) {
+      try {
+        await createRoom({ name: room, maxParticipants: roster.length });
+        call.roomProvisioned = true;
+      } catch {
+        deleteRoomBestEffort(room);
+        if (calls.get(callId) === call) {
+          endCall(call, 'media_unavailable');
+          error(session.socket, 'media_unavailable');
+        }
+        return;
+      }
+    }
+
+    const stillActive = calls.get(callId) === call && adminSettings.callsEnabled
+      && call.members.every((number) => {
+        if (blockedNumbers.has(number) || memberships.get(number) !== callId) return false;
+        const member = sessions.get(number);
+        if (member && !member.closed && member.socket.readyState === WebSocket.OPEN) return true;
+        return number !== call.owner && pushConfigured && pushTokens.has(number);
+      });
+    if (!stillActive) {
+      if (calls.get(callId) === call) endCall(call, 'disconnected');
+      else if (call.roomProvisioned) deleteRoomBestEffort(room);
+      return;
+    }
+
+    call.announced = true;
     const invitation = { callId, room, members: roster, owner: call.owner };
     send(session.socket, { type: 'call_created', ...invitation });
-    for (const number of members) send(sessions.get(number).socket, { type: 'incoming', ...invitation });
+    for (const number of members) {
+      const target = sessions.get(number);
+      if (target && !target.closed && target.socket.readyState === WebSocket.OPEN) {
+        if (!send(target.socket, { type: 'incoming', ...invitation })) {
+          sendPush(number, 'call', call.id, CALL_PUSH_TTL_MS);
+        }
+      } else {
+        sendPush(number, 'call', call.id, CALL_PUSH_TTL_MS);
+      }
+    }
     appendAdminEvent('call_created');
   }
 
@@ -843,6 +1296,7 @@ export async function createSignalingServer(options = {}) {
     if (!call || !call.members.includes(session.number) || memberships.get(session.number) !== callId) {
       return error(session.socket, 'unauthorized', { callId });
     }
+    if (!call.announced) return error(session.socket, 'call_not_ready', { callId });
     if (!mediaConfig) return error(session.socket, 'media_not_configured', { callId });
 
     try {
@@ -874,10 +1328,14 @@ export async function createSignalingServer(options = {}) {
   function handleMessage(session, message) {
     if (message.type === 'admin_login' || message.type === 'admin') return handleAdminMessage(session, message);
     if (!session.number) {
-      if (message.type !== 'register' || !hasOnlyKeys(message, ['type', 'token', 'bundle'])) return error(session.socket, 'registration_required');
+      if (message.type !== 'register' || !hasOnlyKeys(message, ['type', 'token', 'bundle', 'protocolVersion'])
+        || (message.protocolVersion !== undefined
+          && (!Number.isSafeInteger(message.protocolVersion) || message.protocolVersion < 1 || message.protocolVersion > 255))) {
+        return error(session.socket, 'registration_required');
+      }
       return queueStoreOperation(
         session,
-        () => register(session, message.token, message.bundle),
+        () => register(session, message.token, message.bundle, message.protocolVersion ?? 6),
         (code) => error(session.socket, code),
       );
     }
@@ -905,7 +1363,19 @@ export async function createSignalingServer(options = {}) {
           || ![2, 3].includes(message.cipherType) || !validBase64(message.body, MAX_ENVELOPE_BYTES)) {
           return error(session.socket, 'invalid_message', typeof message.id === 'string' ? { id: message.id } : {});
         }
-        return relayEnvelope(session, message);
+        return queueStoreOperation(session, () => relayEnvelope(session, message),
+          (code) => error(session.socket, code, { id: message.id }));
+      case 'delivery_ack':
+        if (session.protocolVersion < 7 || !hasOnlyKeys(message, ['type', 'id'])
+          || typeof message.id !== 'string' || !UUID_PATTERN.test(message.id)) {
+          return error(session.socket, 'invalid_message', typeof message.id === 'string' ? { id: message.id } : {});
+        }
+        return queueStoreOperation(session, () => acknowledgeDelivery(session, message.id),
+          (code) => error(session.socket, code, { id: message.id }));
+      case 'push_register':
+        if (session.protocolVersion < 7 || !hasOnlyKeys(message, ['type', 'token'])) return error(session.socket, 'invalid_message');
+        return queueStoreOperation(session, () => registerPushToken(session, message.token),
+          (code) => error(session.socket, code));
       case 'create_call':
         if (!hasOnlyKeys(message, ['type', 'members'])) return error(session.socket, 'invalid_message');
         return createCall(session, message.members);
@@ -1013,6 +1483,19 @@ export async function createSignalingServer(options = {}) {
   }, heartbeatIntervalMs);
   heartbeat.unref?.();
 
+  const mailboxCleanup = setInterval(() => {
+    const task = storeQueue.then(async () => {
+      const now = Date.now();
+      const envelopes = new Map([...mailbox.envelopes].filter(([, item]) => item.expiresAt > now));
+      const receipts = new Map([...mailbox.receipts].filter(([, item]) => item.expiresAt > now));
+      if (envelopes.size !== mailbox.envelopes.size || receipts.size !== mailbox.receipts.size) {
+        try { await saveMailboxState(envelopes, receipts); } catch {}
+      }
+    });
+    storeQueue = task.catch(() => {});
+  }, Math.min(mailboxTtlMs, 60_000));
+  mailboxCleanup.unref?.();
+
   return {
     httpServer,
     wss,
@@ -1028,6 +1511,7 @@ export async function createSignalingServer(options = {}) {
     },
     async close() {
       clearInterval(heartbeat);
+      clearInterval(mailboxCleanup);
       for (const call of [...calls.values()]) endCall(call, 'disconnected');
       for (const socket of wss.clients) socket.terminate();
       await new Promise((resolveClose) => {

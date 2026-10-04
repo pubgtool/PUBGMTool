@@ -2,6 +2,7 @@ package app.line
 
 import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteException
 import androidx.test.platform.app.InstrumentationRegistry
 import app.line.crypto.SecureStore
 import org.junit.Assert.assertEquals
@@ -33,6 +34,8 @@ class MessageDeletionTest {
                     SELECT sequence,id,peer,text,outgoing,status,created_at FROM messages_v2_test WHERE deleted=0""")
                 database.execSQL("DROP TABLE messages_v2_test")
                 database.execSQL("CREATE INDEX messages_peer_sequence ON messages(peer, sequence DESC)")
+                database.execSQL("DROP TABLE activity_events")
+                database.execSQL("DROP TABLE activity_clock")
                 database.version = 1
                 database.setTransactionSuccessful()
             } finally { database.endTransaction() }
@@ -70,6 +73,75 @@ class MessageDeletionTest {
                 // The retained tombstone prevents an id from being reused to restore message text.
             }
             assertEquals(listOf("Останется"), store.messages(peer).map { it.text })
+        }
+    }
+
+    @Test fun acknowledgeSentUpdatesQueuedChatAndRemovesOutbox() {
+        val peer = "88009900"
+        val id = "ack-${UUID.randomUUID()}"
+        val body = android.util.Base64.encodeToString("opaque".toByteArray(), android.util.Base64.NO_WRAP)
+        SecureStore(context).use { store ->
+            store.saveMessage(peer, id, "Подтверждение", true, "queued")
+            store.putOutbox(peer, id, 2, body)
+
+            store.acknowledgeSent(id)
+
+            assertEquals("sent", store.messages(peer).single { it.id == id }.status)
+            assertTrue(store.outbox().none { it.id == id })
+            store.acknowledgeSent(id)
+            assertEquals("sent", store.messages(peer).single { it.id == id }.status)
+        }
+    }
+
+    @Test fun acknowledgeSentRollsBackOutboxRemovalWhenStatusUpdateFails() {
+        val peer = "12344321"
+        val id = "ack-rollback-${UUID.randomUUID()}"
+        val body = android.util.Base64.encodeToString("opaque".toByteArray(), android.util.Base64.NO_WRAP)
+        SecureStore(context).use { store ->
+            store.saveMessage(peer, id, "Останется в очереди", true, "queued")
+            store.putOutbox(peer, id, 2, body)
+            SQLiteDatabase.openDatabase(context.getDatabasePath("line-secure-store.db").path, null,
+                SQLiteDatabase.OPEN_READWRITE).use { database ->
+                database.execSQL("CREATE TRIGGER fail_ack BEFORE UPDATE OF status ON messages " +
+                    "WHEN NEW.id='$id' BEGIN SELECT RAISE(ABORT, 'Test acknowledgement failure'); END")
+                try {
+                    try {
+                        store.acknowledgeSent(id)
+                        fail("A failed status update must roll back the entire acknowledgement")
+                    } catch (_: SQLiteException) {
+                    }
+                    assertTrue(store.outbox().any { it.id == id })
+                    assertEquals("queued", store.messages(peer).single { it.id == id }.status)
+                } finally {
+                    database.execSQL("DROP TRIGGER fail_ack")
+                }
+            }
+            store.acknowledgeSent(id)
+            assertTrue(store.outbox().none { it.id == id })
+        }
+    }
+
+    @Test fun acknowledgeSentHandlesNoChatRowAndDeletedMessage() {
+        val peer = "99001122"
+        val missingId = "ack-key-${UUID.randomUUID()}"
+        val deletedId = "ack-deleted-${UUID.randomUUID()}"
+        val body = android.util.Base64.encodeToString("opaque".toByteArray(), android.util.Base64.NO_WRAP)
+        SecureStore(context).use { store ->
+            store.putOutbox(peer, missingId, 2, body)
+            store.acknowledgeSent(missingId)
+            assertTrue(store.outbox().none { it.id == missingId })
+            assertTrue(store.messages(peer).none { it.id == missingId })
+            store.saveMessage(peer, deletedId, "Удалено", true, "queued")
+            store.putOutbox(peer, deletedId, 2, body)
+            store.deleteMessage(deletedId)
+            store.acknowledgeSent(deletedId)
+            assertTrue(store.outbox().none { it.id == deletedId })
+            assertTrue(store.messages(peer).none { it.id == deletedId })
+            try {
+                store.saveMessage(peer, deletedId, "Не восстанавливать", false, "received")
+                fail("Acknowledgement must preserve deletion tombstones")
+            } catch (_: SQLiteConstraintException) {
+            }
         }
     }
 

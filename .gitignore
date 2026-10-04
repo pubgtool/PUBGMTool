@@ -35,6 +35,8 @@ server/data/
 *.keystore
 *.jks
 artifacts/
+.hoplite/attachments/
+.hoplite/runtime/
 app/src/debug/AndroidManifest.xml
 app/src/debug/res/xml/local_test_security.xml
 app/src/debug/res/raw/local_test_ca.pem

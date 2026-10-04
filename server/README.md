@@ -1,6 +1,6 @@
 # LINE signaling and encrypted relay
 
-Node 24 service for registration, public Signal key-bundle discovery, transient encrypted-message delivery, and fixed-roster LiveKit audio rooms. The server never receives private identity/session keys, plaintext chat, SDP, or media. It does retain public bundles and account-to-number mappings, and transiently processes routing metadata; it is not anonymous or zero-metadata.
+Node 24 service for registration, public Signal key-bundle discovery, a persistent encrypted-message mailbox, optional Firebase Cloud Messaging wake-ups, and fixed-roster LiveKit audio rooms. The server never receives private identity/session keys, plaintext chat, SDP, or media. It does retain ciphertext for up to seven days, public bundles, account-to-number mappings, push tokens, and routing metadata; it is not anonymous or zero-metadata.
 
 ## Run and test
 
@@ -18,15 +18,20 @@ The service listens on `0.0.0.0:3000`. `GET /` and `/health` return only `{"stat
 | Variable | Meaning |
 | --- | --- |
 | `DATA_FILE` | Persistent versioned JSON store. Defaults to `server/data/identities.json`; contains SHA-256 installation-token hashes, 8-digit numbers, and public key bundles only. |
+| `MAILBOX_FILE` | Atomic mode-`0600` encrypted-message queue; defaults to `${DATA_FILE}.mailbox.json`. Holds at most 1,000 messages total and 100 per recipient for up to seven days, plus at most 5,000 delivery receipts. |
+| `PUSH_TOKEN_FILE` | Atomic mode-`0600` account-to-FCM-token store; defaults to `${DATA_FILE}.push.json`. The file contains sensitive device tokens and must be protected with the identity store. |
+| `FCM_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS` | Optional pair enabling Android push. Point the latter at a protected Google service-account JSON file outside the repository. Both unset disables FCM without disabling queued messages; configuring only one or an unreadable credential file prevents startup. See [`../docs/PUSH-SETUP.md`](../docs/PUSH-SETUP.md). |
 | `PORT`, `HOST` | HTTP listen port and interface; defaults to `3000` and `0.0.0.0`. |
-| `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. |
+| `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. Plain `ws://` is rejected. |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Server-only LiveKit credentials. Keep the secret off clients. If any media setting is missing or invalid, registration and messaging still work but joining returns `media_not_configured`. |
 | `ADMIN_PASSWORD_HASH` | Optional scrypt verifier (`scrypt$<salt-base64>$<digest-base64>`). Admin access is disabled when missing or malformed; never configure a plaintext admin code. |
 | `ADMIN_DATA_FILE` | Persistent admin settings and blocklist. Defaults to `${DATA_FILE}.admin.json`; atomic writes use mode `0600`, and an invalid existing file stops startup rather than silently resetting controls. |
 
 Room access tokens are signed by `livekit-server-sdk` 2.19.1 with a 120-second TTL. Each grant is restricted to one roster room, allows microphone publishing and subscription, and disallows data publishing. LiveKit API secrets are never returned to clients. Chat and signaling work without LiveKit being configured; the backend will not issue placeholder media tokens.
 
-The JSON store is written by an atomic rename with mode `0600`. Version-1 stores containing `{ "version": 1, "identities": { "<token hash>": "<number>" } }` are accepted. The next successful registration with a public bundle writes version 2 and preserves that installation's existing number. The store is a single-process file; do not run multiple API replicas against it. Back up the file securely.
+With media configured, the API explicitly creates rooms before announcing calls and limits each room to its roster size. Set `room.auto_create: false` in LiveKit as in `deploy/livekit.yaml`; otherwise an unexpired participant token can recreate a deleted room. Creation failures return `media_unavailable` without invitations. Deletion is best-effort, not immediate token revocation: if deletion fails, an existing room may remain joinable until its grants expire.
+
+Each persistent JSON store is written by an atomic rename with mode `0600`. Version-1 identity stores containing `{ "version": 1, "identities": { "<token hash>": "<number>" } }` are accepted. The next successful registration with a public bundle writes version 2 and preserves that installation's existing number. The stores are single-process files; do not run multiple API replicas against them. Back them up securely. Mailbox backups contain encrypted message bodies and routing metadata; delete them according to your retention policy.
 
 ### Admin bootstrap and access
 
@@ -69,7 +74,7 @@ All messages are JSON text. Registration is required within 10 seconds. Maximum 
 }
 ```
 
-Success includes `{ "type": "registered", "number": "12345678", "mediaReady": true, "callsEnabled": true, "chatEnabled": true, "registrationEnabled": true, "maxParticipants": 8 }`. `mediaReady` reflects valid LiveKit configuration, not network availability. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
+Version 7 clients register with the additional field `"protocolVersion": 7`. Their `registered` response includes `pushEnabled`, which is true only when FCM is configured and this account already has a token. Version-6 clients may omit the field and retain the legacy `sent` response. `mediaReady` reflects valid LiveKit configuration, not network availability. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
 
 ### Encrypted messages
 
@@ -77,7 +82,15 @@ Success includes `{ "type": "registered", "number": "12345678", "mediaReady": tr
 { "type": "envelope", "to": "12345678", "id": "550e8400-e29b-41d4-a716-446655440000", "cipherType": 2, "body": "<base64 ciphertext>" }
 ```
 
-Only ciphertext bodies of up to 24 KiB decoded are accepted. An online recipient receives `{ "type": "envelope", "from": "87654321", "id": "550e8400-e29b-41d4-a716-446655440000", "cipherType": 2, "body": "<base64 ciphertext>" }`; the sender receives `{ "type": "sent", "id": "550e8400-e29b-41d4-a716-446655440000" }`. An offline target returns `{ "type": "error", "code": "offline", "id": "550e8400-e29b-41d4-a716-446655440000" }` with no persistence or offline queue. Sender/id duplicates are transiently deduplicated in bounded memory; they are never stored across restart. Delivery acknowledgements confirm relay only, not recipient persistence or display.
+Only ciphertext bodies of up to 24 KiB decoded are accepted, and the recipient must be an existing, unblocked account. The envelope is atomically stored before the sender receives `{ "type": "queued", "id": "550e8400-e29b-41d4-a716-446655440000" }`. Online recipients receive `{ "type": "envelope", "from": "87654321", "id": "550e8400-e29b-41d4-a716-446655440000", "cipherType": 2, "body": "<base64 ciphertext>" }`; offline recipients receive it after the next successful registration. Reconnect delivery is at-least-once until acknowledged, so clients must deduplicate by message ID and acknowledge only after saving the encrypted message locally:
+
+```json
+{ "type": "delivery_ack", "id": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+Only the addressed recipient can acknowledge a pending envelope. The server atomically removes it, stores a seven-day delivery receipt, and notifies an online version-7 sender with `{ "type": "delivered", "id": "550e8400-e29b-41d4-a716-446655440000" }`; receipts are also replayed to the sender after reconnect. `queued` means durable server acceptance, not recipient delivery. For legacy version-6 clients the server returns `sent` after durable acceptance, but they do not send delivery acknowledgements; upgrade both clients to version 7 for delivery status and eventual mailbox cleanup. Messages expire after seven days. Unknown recipients return `not_found`; full queues return `mailbox_full`.
+
+When FCM is configured and the recipient is offline, the server sends only generic data `{ "kind": "message", "id": "550e8400-e29b-41d4-a716-446655440000" }`; no sender number or ciphertext is included. Push is a wake-up hint, not message storage: clients must reconnect and fetch the queued envelope. See [`../docs/PUSH-SETUP.md`](../docs/PUSH-SETUP.md).
 
 ### Fixed-roster group audio calls
 
@@ -85,7 +98,15 @@ Only ciphertext bodies of up to 24 KiB decoded are accepted. An online recipient
 { "type": "create_call", "members": ["12345678", "87654321"] }
 ```
 
-One to seven distinct online numbers other than the caller are allowed, for a maximum room size of eight. All invitees must be online and not in another call. `call_created` goes to the owner and `incoming` to each invitee, each carrying the same `{ "callId": "550e8400-e29b-41d4-a716-446655440001", "room": "line-550e8400-e29b-41d4-a716-446655440001", "members": ["<owner>", "..."], "owner": "<owner>" }`. Rosters cannot change. Each member sends `{ "type": "join_call", "callId": "550e8400-e29b-41d4-a716-446655440001" }` and receives `room_grant` with that fixed roster, public LiveKit URL, and a short-lived room-scoped token. Outsiders cannot get a token. `leave_call`, `decline_call`, any participant disconnect, or a 45-second invite deadline ends the entire call and triggers best-effort LiveKit room deletion; a new call always gets a new UUID and room. The timeout is cleared only after every roster member requests a grant.
+One to seven distinct existing, unblocked numbers other than the caller are allowed, for a maximum room size of eight. Online invitees must not be in another call. Offline invitees are allowed only with an FCM token registered for their own account and configured FCM; the LiveKit room is created before invitations are sent. `call_created` goes to the owner, `incoming` to online invitees, and an opaque `{ "kind": "call", "id": "550e8400-e29b-41d4-a716-446655440000" }` push wake-up to offline invitees. The roster is fixed. A reconnecting invitee receives the pending invitation and can join before the 45-second ring timeout. A callee disconnect before accepting does not end the ring; owner or joined-member disconnect, `leave_call`, `decline_call`, or timeout ends the call and triggers best-effort LiveKit room deletion. An ended offline invitation may receive `{ "kind": "call_ended", "id": "550e8400-e29b-41d4-a716-446655440000" }` so the client can dismiss its incoming-call notification. Each member sends `{ "type": "join_call", "callId": "550e8400-e29b-41d4-a716-446655440000" }` and receives a room-scoped grant; outsiders cannot obtain a token. Without valid LiveKit configuration the server returns `media_not_configured` before it creates or pushes a call.
+
+Version-7 Android clients register a token after WebSocket registration:
+
+```json
+{ "type": "push_register", "token": "<FCM registration token>" }
+```
+
+The token is bound to the authenticated WebSocket account and stored separately with mode `0600`. The response is `{ "type": "push_registered", "pushEnabled": true }` when push is configured. Invalid/unregistered FCM tokens are removed. Push data contains only `kind` and an opaque message/call ID; clients must never depend on push payloads for message content or call authorization.
 
 An unset/invalid LiveKit configuration makes `join_call` return `media_not_configured`; token-service errors return `media_unavailable`. Network changes on clients should close their WebSocket promptly; dead transports are also detected by heartbeat.
 
@@ -96,4 +117,4 @@ An unset/invalid LiveKit configuration makes `join_call` return `media_not_confi
 - WebRTC transport encryption alone is not end-to-end encryption through an SFU. LiveKit and TURN still observe connection/participant metadata and IP addresses; the signaling service sees installation numbers, call rosters, online status, and message-routing timing. The service is not untrackable and must not be described as hiding all metadata.
 - Use TLS for both API and LiveKit WebSocket endpoints. Mobile clients should pin SPKI public keys for each host with a staged backup pin and a tested rotation/release plan; do not pin short-lived leaf certificates without an overlap strategy. See [`deploy/README.md`](../deploy/README.md).
 
-The process defaults to a single Node instance with limits of 1,000 sockets, 100,000 identities, 30 registration attempts per source IP per minute, and a 1,000-operation persistence queue. In-memory calls, deduplication, and rate limits reset on restart. Scale-out requires coordinated identity storage, one-time-prekey consumption, call state, deduplication, and rate limits.
+The process defaults to a single Node instance with limits of 1,000 sockets, 100,000 identities, 30 registration attempts per source IP per minute, and a 1,000-operation persistence queue. Mailboxes and delivery receipts survive restart; live calls and rate limits do not. Scale-out requires coordinated identity storage, one-time-prekey consumption, mailbox/receipt updates, call state, push-token storage, and rate limits.
