@@ -7,7 +7,7 @@ import app.line.push.PushConfiguration
 class LineApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        PushConfiguration.initializeDefaultFirebase(this)
         PushAlerts.createChannels(this)
+        PushConfiguration.reRegisterIfSelected(this)
     }
 }

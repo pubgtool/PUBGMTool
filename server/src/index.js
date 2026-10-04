@@ -1,6 +1,8 @@
-import { createHash, createPrivateKey, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import { createServer } from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +22,9 @@ const DEFAULT_MAX_MAILBOX_PER_USER = 100;
 const DEFAULT_MAX_RECEIPTS = 5_000;
 const DEFAULT_MAX_INBOX_SYNCS_PER_WINDOW = 10;
 const DEFAULT_INBOX_SYNC_WINDOW_MS = 60_000;
-const MIN_PUSH_TOKEN_BYTES = 25;
-const MAX_PUSH_TOKEN_BYTES = 4_096;
+const MAX_PUSH_ENDPOINT_BYTES = 1_000;
+const PUSH_TOPIC_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const MAX_DISPLAY_NAME_LENGTH = 40;
 const MESSAGE_PUSH_TTL_MS = 24 * 60 * 60 * 1_000;
 const CALL_PUSH_TTL_MS = 45_000;
 const DEFAULT_ADMIN_SETTINGS = Object.freeze({
@@ -80,8 +83,22 @@ function validateBundle(bundle) {
   };
 }
 
+function normalizeDisplayName(value) {
+  if (typeof value !== 'string') return undefined;
+  const displayName = value.normalize('NFC').trim();
+  if (Array.from(displayName).length > MAX_DISPLAY_NAME_LENGTH
+    || Buffer.byteLength(displayName, 'utf8') > MAX_DISPLAY_NAME_LENGTH * 4
+    || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(displayName)) return undefined;
+  return displayName;
+}
+
 function cloneEntry(entry) {
-  return { number: entry.number, bundle: entry.bundle ? structuredClone(entry.bundle) : null, preKeyFloor: entry.preKeyFloor ?? -1 };
+  return {
+    number: entry.number,
+    bundle: entry.bundle ? structuredClone(entry.bundle) : null,
+    preKeyFloor: entry.preKeyFloor ?? -1,
+    displayName: entry.displayName ?? '',
+  };
 }
 
 async function loadIdentities(dataFile, maxIdentities) {
@@ -118,7 +135,9 @@ async function loadIdentities(dataFile, maxIdentities) {
     }
     const preKeyFloor = legacy ? -1 : (stored.preKeyFloor ?? -1);
     if (!Number.isSafeInteger(preKeyFloor) || preKeyFloor < -1) throw new Error('Invalid prekey counter');
-    identities.set(hash, { number, bundle: publicBundle, preKeyFloor });
+    const displayName = stored?.displayName === undefined ? '' : normalizeDisplayName(stored.displayName);
+    if (displayName === undefined) throw new Error(`Identity store contains an invalid display name: ${dataFile}`);
+    identities.set(hash, { number, bundle: publicBundle, preKeyFloor, displayName });
     numbers.add(number);
   }
   if (identities.size > maxIdentities) throw new Error('Identity store exceeds MAX_IDENTITIES');
@@ -269,7 +288,117 @@ async function loadMailbox(mailboxFile, numberOwners, blockedNumbers, now, ttlMs
   return { envelopes, receipts, dirty };
 }
 
-async function loadPushTokens(pushFile, numberOwners, blockedNumbers) {
+function isPublicAddress(address) {
+  const family = isIP(address);
+  if (family === 4) {
+    const parts = address.split('.').map(Number);
+    const value = parts.reduce((number, part) => (number * 256) + part, 0);
+    const ranges = [
+      [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8],
+      [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24],
+      [0xc0586300, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xc6336400, 24],
+      [0xcb007100, 24], [0xe0000000, 4], [0xf0000000, 4],
+    ];
+    return !ranges.some(([network, prefix]) => Math.floor(value / (2 ** (32 - prefix)))
+      === Math.floor(network / (2 ** (32 - prefix))));
+  }
+  if (family !== 6) return false;
+  const halves = address.toLowerCase().split('::');
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves[1] ? halves[1].split(':') : [];
+  const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right]
+    .map((word) => Number.parseInt(word || '0', 16));
+  const first = words[0];
+  const second = words[1];
+  return (first & 0xe000) === 0x2000
+    && !(first === 0x2001 && second <= 0x01ff)
+    && !(first === 0x2001 && second === 0x0db8)
+    && first !== 0x2002
+    && !(first === 0x3fff && second <= 0x0fff);
+}
+
+function parsePushOrigin(value) {
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) return undefined;
+  let url;
+  try { url = new URL(value); } catch { return undefined; }
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (url.protocol !== 'https:' || /:\/\/[^/?#]*@/.test(value) || value.includes('?') || value.includes('#')
+    || url.username || url.password || url.search || url.hash
+    || !['', '/'].includes(url.pathname) || isIP(hostname) || !hostname.includes('.')
+    || hostname === 'localhost' || hostname.endsWith('.localhost') || url.origin === 'null') return undefined;
+  return url.origin;
+}
+
+function loadPushAllowedOrigins(value) {
+  if (typeof value !== 'string' || !value.trim()) return new Set();
+  const origins = new Set();
+  for (const raw of value.split(',')) {
+    const origin = parsePushOrigin(raw.trim());
+    if (!origin) throw new Error('PUSH_ALLOWED_ORIGINS must contain HTTPS origins only');
+    origins.add(origin);
+  }
+  return origins;
+}
+
+function parsePushEndpoint(value, allowedOrigins) {
+  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > MAX_PUSH_ENDPOINT_BYTES
+    || value !== value.trim() || /[\u0000-\u0020\u007f]/.test(value)) return undefined;
+  let url;
+  try { url = new URL(value); } catch { return undefined; }
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const topic = url.pathname.slice(1);
+  if (url.protocol !== 'https:' || /:\/\/[^/?#]*@/.test(value) || value.includes('?') || value.includes('#')
+    || url.username || url.password || url.search || url.hash
+    || isIP(hostname) || !hostname.includes('.') || hostname === 'localhost' || hostname.endsWith('.localhost')
+    || !PUSH_TOPIC_PATTERN.test(topic) || !allowedOrigins.has(url.origin)) return undefined;
+  return url;
+}
+
+async function resolvePublicPushAddresses(hostname, resolver = lookup) {
+  if (isIP(hostname)) throw new Error('IP address push hosts are not allowed');
+  const records = await resolver(hostname, { all: true, verbatim: true });
+  if (!Array.isArray(records) || records.length === 0
+    || records.some((record) => !isPublicAddress(record.address))) {
+    throw new Error('Push endpoint DNS must resolve only to public addresses');
+  }
+  return records;
+}
+
+async function postPushHttps(url, body, address, ttlMs) {
+  return new Promise((resolveRequest, rejectRequest) => {
+    const bodyBytes = Buffer.from(body, 'utf8');
+    const req = httpsRequest(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': bodyBytes.length,
+        'cache': 'no',
+        'priority': '5',
+        'x-ttl': String(Math.max(1, Math.ceil(ttlMs / 1_000))),
+      },
+      lookup(hostname, options, callback) {
+        if (hostname !== url.hostname) return callback(new Error('Unexpected push host'));
+        const family = isIP(address);
+        if (options?.all) return callback(null, [{ address, family }]);
+        return callback(null, address, family);
+      },
+      timeout: 5_000,
+    }, (response) => {
+      let bytes = 0;
+      response.on('data', (chunk) => {
+        bytes += chunk.length;
+        if (bytes > 4_096) response.destroy(new Error('Push response too large'));
+      });
+      response.on('end', () => resolveRequest(response.statusCode ?? 0));
+      response.on('error', rejectRequest);
+    });
+    req.on('timeout', () => req.destroy(new Error('Push request timed out')));
+    req.on('error', rejectRequest);
+    req.end(bodyBytes);
+  });
+}
+
+async function loadPushTokens(pushFile, numberOwners, blockedNumbers, allowedOrigins) {
   let text;
   try {
     text = await readFile(pushFile, 'utf8');
@@ -288,59 +417,42 @@ async function loadPushTokens(pushFile, numberOwners, blockedNumbers) {
   }
   const tokens = new Map();
   let dirty = false;
-  for (const [number, token] of Object.entries(document.tokens)) {
-    if (!NUMBER_PATTERN.test(number) || !numberOwners.has(number)
-      || typeof token !== 'string' || Buffer.byteLength(token, 'utf8') < MIN_PUSH_TOKEN_BYTES
-      || Buffer.byteLength(token, 'utf8') > MAX_PUSH_TOKEN_BYTES || /[\u0000-\u0020\u007f]/.test(token)) {
-      throw new Error(`Push token store contains an invalid or unknown account: ${pushFile}`);
+  for (const [number, endpoint] of Object.entries(document.tokens)) {
+    const url = parsePushEndpoint(endpoint, allowedOrigins);
+    if (typeof endpoint !== 'string' || !url || !NUMBER_PATTERN.test(number) || !numberOwners.has(number)) {
+      dirty = true;
+      continue;
     }
     if (blockedNumbers.has(number)) {
       dirty = true;
       continue;
     }
-    tokens.set(number, token);
+    tokens.set(number, url.href);
   }
   return { tokens, dirty };
 }
 
-async function createPushSender(env, options) {
+async function createPushSender(options, allowedOrigins) {
+  if (allowedOrigins.size === 0) return { pushSender: undefined, pushConfigured: false };
   if (options.pushSender) return { pushSender: options.pushSender, pushConfigured: true };
-  const projectId = typeof env.FCM_PROJECT_ID === 'string' ? env.FCM_PROJECT_ID.trim() : '';
-  const credentialsPath = typeof env.GOOGLE_APPLICATION_CREDENTIALS === 'string'
-    ? env.GOOGLE_APPLICATION_CREDENTIALS.trim() : '';
-  if (!projectId && !credentialsPath) return { pushSender: undefined, pushConfigured: false };
-  if (!projectId || !credentialsPath) {
-    throw new Error('FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS must be configured together');
-  }
-  try {
-    const credentialText = await readFile(credentialsPath, 'utf8');
-    const serviceAccount = JSON.parse(credentialText);
-    if (serviceAccount?.type !== 'service_account' || typeof serviceAccount.client_email !== 'string'
-      || typeof serviceAccount.private_key !== 'string' || serviceAccount.private_key.length === 0) {
-      throw new Error('invalid service account');
-    }
-    createPrivateKey(serviceAccount.private_key);
-    const [{ cert, getApps, initializeApp }, { getMessaging }] = await Promise.all([
-      import('firebase-admin/app'), import('firebase-admin/messaging'),
-    ]);
-    const appName = 'line-signaling';
-    const app = getApps().find((candidate) => candidate.name === appName)
-      ?? initializeApp({ credential: cert(serviceAccount), projectId }, appName);
-    const messaging = getMessaging(app);
-    return {
-      pushConfigured: true,
-      pushSender: (token, payload) => messaging.send({
-        token,
-        data: { kind: payload.kind, id: payload.id },
-        android: {
-          priority: 'high',
-          ttl: Math.max(1, payload.ttlMs),
-        },
-      }),
-    };
-  } catch {
-    throw new Error('FCM configuration is invalid; verify the project ID and service-account file');
-  }
+  const resolver = options.pushResolver ?? lookup;
+  const request = options.pushHttpRequest ?? postPushHttps;
+  return {
+    pushConfigured: true,
+    pushSender: async (endpoint, payload) => {
+      const url = new URL(endpoint);
+      if (!allowedOrigins.has(url.origin)) throw new Error('Push endpoint is no longer allowed');
+      const addresses = await resolvePublicPushAddresses(url.hostname, resolver);
+      const status = await request(url, JSON.stringify({ kind: payload.kind, id: payload.id }),
+        addresses[0].address, payload.ttlMs);
+      if (status === 404 || status === 410) {
+        const gone = new Error('Push endpoint is no longer available');
+        gone.endpointGone = true;
+        throw gone;
+      }
+      if (status < 200 || status >= 300) throw new Error('Push delivery failed');
+    },
+  };
 }
 
 function consumeRateLimit(map, key, { limit, windowMs, now = Date.now() }) {
@@ -486,9 +598,10 @@ export async function createSignalingServer(options = {}) {
   const dataFile = resolve(options.dataFile ?? env.DATA_FILE ?? defaultDataFile);
   const adminDataFile = resolve(options.adminDataFile ?? env.ADMIN_DATA_FILE ?? `${dataFile}.admin.json`);
   const mailboxFile = resolve(options.mailboxFile ?? env.MAILBOX_FILE ?? `${dataFile}.mailbox.json`);
-  const pushTokenFile = resolve(options.pushTokenFile ?? env.PUSH_TOKEN_FILE ?? `${dataFile}.push.json`);
+  const pushTokenFile = resolve(options.pushEndpointFile ?? env.PUSH_ENDPOINT_FILE
+    ?? options.pushTokenFile ?? env.PUSH_TOKEN_FILE ?? `${dataFile}.push.json`);
   if (new Set([dataFile, adminDataFile, mailboxFile, pushTokenFile]).size !== 4) {
-    throw new Error('Identity, admin, mailbox, and push-token stores must use separate files');
+    throw new Error('Identity, admin, mailbox, and push-endpoint stores must use separate files');
   }
   const adminPasswordHash = parseAdminPasswordHash(env.ADMIN_PASSWORD_HASH);
   const adminSessionMs = options.adminSessionMs ?? 5 * 60_000;
@@ -510,6 +623,8 @@ export async function createSignalingServer(options = {}) {
   const maxReceiptEntries = options.maxReceiptEntries ?? DEFAULT_MAX_RECEIPTS;
   const maxInboxSyncsPerWindow = options.maxInboxSyncsPerWindow ?? DEFAULT_MAX_INBOX_SYNCS_PER_WINDOW;
   const inboxSyncWindowMs = options.inboxSyncWindowMs ?? DEFAULT_INBOX_SYNC_WINDOW_MS;
+  const pushAllowedOrigins = loadPushAllowedOrigins(env.PUSH_ALLOWED_ORIGINS);
+  const pushResolver = options.pushResolver ?? lookup;
   if (!Number.isSafeInteger(mailboxTtlMs) || mailboxTtlMs < 1 || mailboxTtlMs > DEFAULT_MAILBOX_TTL_MS
     || !Number.isSafeInteger(maxMailboxEntries) || maxMailboxEntries < 1 || maxMailboxEntries > DEFAULT_MAX_MAILBOX_ENTRIES
     || !Number.isSafeInteger(maxMailboxPerUser) || maxMailboxPerUser < 1 || maxMailboxPerUser > DEFAULT_MAX_MAILBOX_PER_USER
@@ -548,12 +663,12 @@ export async function createSignalingServer(options = {}) {
       receipts: [...mailbox.receipts.values()],
     });
   }
-  const storedPushTokens = await loadPushTokens(pushTokenFile, numberOwners, blockedNumbers);
+  const storedPushTokens = await loadPushTokens(pushTokenFile, numberOwners, blockedNumbers, pushAllowedOrigins);
   let pushTokens = storedPushTokens.tokens;
   if (storedPushTokens.dirty) {
     await atomicWriteJson(pushTokenFile, { version: 1, tokens: Object.fromEntries(pushTokens) });
   }
-  const pushConfig = await createPushSender(env, options);
+  const pushConfig = await createPushSender(options, pushAllowedOrigins);
   const { pushSender, pushConfigured } = pushConfig;
   const mediaConfig = buildMediaConfig(env);
   const tokenIssuer = options.tokenIssuer ?? (async ({ identity, room, apiKey, apiSecret }) => {
@@ -894,9 +1009,9 @@ export async function createSignalingServer(options = {}) {
     pushTokens = tokens;
   }
 
-  function removeInvalidPushToken(number, token) {
+  function removeInvalidPushToken(number, endpoint) {
     const task = storeQueue.then(async () => {
-      if (pushTokens.get(number) !== token) return;
+      if (pushTokens.get(number) !== endpoint) return;
       const next = new Map(pushTokens);
       next.delete(number);
       try {
@@ -909,11 +1024,10 @@ export async function createSignalingServer(options = {}) {
   }
 
   function sendPush(number, kind, id, ttlMs) {
-    const token = pushTokens.get(number);
-    if (!pushConfigured || !pushSender || !token || blockedNumbers.has(number)) return;
-    Promise.resolve().then(() => pushSender(token, { kind, id, ttlMs })).catch((failure) => {
-      if (['messaging/registration-token-not-registered', 'messaging/invalid-registration-token']
-        .includes(failure?.code)) removeInvalidPushToken(number, token);
+    const endpoint = pushTokens.get(number);
+    if (!pushConfigured || !pushSender || !endpoint || blockedNumbers.has(number)) return;
+    Promise.resolve().then(() => pushSender(endpoint, { kind, id, ttlMs })).catch((failure) => {
+      if (failure?.endpointGone) removeInvalidPushToken(number, endpoint);
     });
   }
 
@@ -1002,17 +1116,18 @@ export async function createSignalingServer(options = {}) {
     sendInboxComplete(session);
   }
 
-  async function registerPushToken(session, value) {
+  async function registerPushEndpoint(session, value) {
     if (!pushConfigured || !pushSender) {
       send(session.socket, { type: 'push_registered', pushEnabled: false });
       return;
     }
-    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') < MIN_PUSH_TOKEN_BYTES
-      || Buffer.byteLength(value, 'utf8') > MAX_PUSH_TOKEN_BYTES || /[\u0000-\u0020\u007f]/.test(value)) {
-      return error(session.socket, 'invalid_push_token');
+    const url = parsePushEndpoint(value, pushAllowedOrigins);
+    if (!url) return error(session.socket, 'invalid_push_endpoint');
+    try { await resolvePublicPushAddresses(url.hostname, pushResolver); } catch {
+      return error(session.socket, 'invalid_push_endpoint');
     }
     const tokens = new Map(pushTokens);
-    tokens.set(session.number, value);
+    tokens.set(session.number, url.href);
     await savePushTokenState(tokens);
     send(session.socket, { type: 'push_registered', pushEnabled: true });
   }
@@ -1110,7 +1225,7 @@ export async function createSignalingServer(options = {}) {
     const next = new Map(identities);
     const preKeyFloor = existing?.preKeyFloor ?? -1;
     publicBundle.preKeys = publicBundle.preKeys.filter((key) => key.id > preKeyFloor);
-    next.set(hash, { number, bundle: publicBundle, preKeyFloor });
+    next.set(hash, { number, bundle: publicBundle, preKeyFloor, displayName: existing?.displayName ?? '' });
     await saveIdentities(dataFile, next);
     replaceIdentities(next);
     if (session.closed || session.socket.readyState !== WebSocket.OPEN) return;
@@ -1127,7 +1242,8 @@ export async function createSignalingServer(options = {}) {
     clearTimeout(timers.get(session));
     appendAdminEvent('registration');
     const registered = {
-      type: 'registered', number, mediaReady: Boolean(mediaConfig),
+      type: 'registered', apiVersion: 8, number, displayName: existing?.displayName ?? '',
+      mediaReady: Boolean(mediaConfig),
       callsEnabled: adminSettings.callsEnabled,
       chatEnabled: adminSettings.chatEnabled,
       registrationEnabled: adminSettings.registrationEnabled,
@@ -1149,7 +1265,9 @@ export async function createSignalingServer(options = {}) {
     const next = new Map(identities);
     const preKeyFloor = current.preKeyFloor ?? -1;
     publicBundle.preKeys = publicBundle.preKeys.filter((key) => key.id > preKeyFloor);
-    next.set(hash, { number: current.number, bundle: publicBundle, preKeyFloor });
+    next.set(hash, {
+      number: current.number, bundle: publicBundle, preKeyFloor, displayName: current.displayName ?? '',
+    });
     await saveIdentities(dataFile, next);
     replaceIdentities(next);
     send(session.socket, { type: 'keys_updated' });
@@ -1163,17 +1281,52 @@ export async function createSignalingServer(options = {}) {
     if (!target?.bundle) return error(session.socket, 'not_found', { requestId: message.requestId });
     if (message.consumePreKey === false) {
       return send(session.socket, { type: 'bundle', peer: message.to, requestId: message.requestId,
-        bundle: { ...structuredClone(target.bundle), preKeys: [] } });
+        displayName: target.displayName ?? '', bundle: { ...structuredClone(target.bundle), preKeys: [] } });
     }
     if (target.bundle.preKeys.length === 0) return error(session.socket, 'prekeys_exhausted', { requestId: message.requestId });
 
     const [preKey, ...remaining] = target.bundle.preKeys;
     const bundle = { ...structuredClone(target.bundle), preKeys: [preKey], preKey };
     const next = new Map(identities);
-    next.set(hash, { number: target.number, bundle: { ...structuredClone(target.bundle), preKeys: remaining }, preKeyFloor: preKey.id });
+    next.set(hash, {
+      number: target.number,
+      bundle: { ...structuredClone(target.bundle), preKeys: remaining },
+      preKeyFloor: preKey.id,
+      displayName: target.displayName ?? '',
+    });
     await saveIdentities(dataFile, next);
     replaceIdentities(next);
-    send(session.socket, { type: 'bundle', peer: message.to, requestId: message.requestId, bundle });
+    send(session.socket, {
+      type: 'bundle', peer: message.to, requestId: message.requestId,
+      displayName: target.displayName ?? '', bundle,
+    });
+  }
+
+  async function updateProfile(session, message) {
+    const displayName = normalizeDisplayName(message.displayName);
+    if (displayName === undefined) return error(session.socket, 'invalid_display_name', { requestId: message.requestId });
+    const hash = numberOwners.get(session.number);
+    const current = hash && identities.get(hash);
+    if (!current) return error(session.socket, 'not_found', { requestId: message.requestId });
+    const next = new Map(identities);
+    next.set(hash, { ...current, displayName });
+    await saveIdentities(dataFile, next);
+    replaceIdentities(next);
+    send(session.socket, { type: 'profile_updated', requestId: message.requestId, displayName });
+  }
+
+  function sendPeerInfo(session, message) {
+    if (!adminSettings.chatEnabled) return error(session.socket, 'chat_disabled', { requestId: message.requestId });
+    if (message.to === session.number || blockedNumbers.has(message.to)) {
+      return error(session.socket, message.to === session.number ? 'self' : 'not_found', { requestId: message.requestId });
+    }
+    const hash = numberOwners.get(message.to);
+    const peer = hash && identities.get(hash);
+    if (!peer) return error(session.socket, 'not_found', { requestId: message.requestId });
+    send(session.socket, {
+      type: 'peer_info', requestId: message.requestId, peer: peer.number, exists: true,
+      displayName: peer.displayName ?? '', online: sessions.has(message.to),
+    });
   }
 
   async function relayEnvelope(session, message) {
@@ -1391,6 +1544,18 @@ export async function createSignalingServer(options = {}) {
           () => lookupBundle(session, message),
           (code) => error(session.socket, code, { requestId: message.requestId }),
         );
+      case 'peer_info':
+        if (!hasOnlyKeys(message, ['type', 'to', 'requestId']) || typeof message.to !== 'string'
+          || !NUMBER_PATTERN.test(message.to) || typeof message.requestId !== 'string' || !UUID_PATTERN.test(message.requestId)) {
+          return error(session.socket, 'invalid_message');
+        }
+        return sendPeerInfo(session, message);
+      case 'profile_update':
+        if (!hasOnlyKeys(message, ['type', 'displayName', 'requestId'])
+          || typeof message.displayName !== 'string' || typeof message.requestId !== 'string'
+          || !UUID_PATTERN.test(message.requestId)) return error(session.socket, 'invalid_message');
+        return queueStoreOperation(session, () => updateProfile(session, message),
+          (code) => error(session.socket, code, { requestId: message.requestId }));
       case 'envelope':
         if (!hasOnlyKeys(message, ['type', 'to', 'id', 'cipherType', 'body']) || typeof message.to !== 'string'
           || !NUMBER_PATTERN.test(message.to) || typeof message.id !== 'string' || !UUID_PATTERN.test(message.id)
@@ -1407,8 +1572,8 @@ export async function createSignalingServer(options = {}) {
         return queueStoreOperation(session, () => acknowledgeDelivery(session, message.id),
           (code) => error(session.socket, code, { id: message.id }));
       case 'push_register':
-        if (session.protocolVersion < 7 || !hasOnlyKeys(message, ['type', 'token'])) return error(session.socket, 'invalid_message');
-        return queueStoreOperation(session, () => registerPushToken(session, message.token),
+        if (session.protocolVersion < 8 || !hasOnlyKeys(message, ['type', 'endpoint'])) return error(session.socket, 'invalid_message');
+        return queueStoreOperation(session, () => registerPushEndpoint(session, message.endpoint),
           (code) => error(session.socket, code));
       case 'inbox_sync':
         if (session.protocolVersion < 7 || !hasOnlyKeys(message, ['type'])) return error(session.socket, 'invalid_message');

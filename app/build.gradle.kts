@@ -11,8 +11,8 @@ android {
         applicationId = "app.line"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.7.1"
+        versionCode = 9
+        versionName = "0.7.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64") }
     }
@@ -39,8 +39,18 @@ android {
     }
 }
 
+configurations.configureEach {
+    val tinkAndroid = "com.google.crypto.tink:tink-android:1.20.0"
+    resolutionStrategy {
+        force(tinkAndroid)
+        dependencySubstitution {
+            substitute(module("com.google.crypto.tink:tink")).using(module(tinkAndroid))
+        }
+    }
+}
+
 dependencies {
-    implementation("com.google.firebase:firebase-messaging:25.0.1")
+    implementation("org.unifiedpush.android:connector:3.3.5")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("io.livekit:livekit-android:2.29.0")

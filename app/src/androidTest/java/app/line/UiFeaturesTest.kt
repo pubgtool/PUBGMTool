@@ -95,16 +95,15 @@ class UiFeaturesTest {
                 visible.any { it.contains("Звонок отклонён") } && visible.contains("Новое сообщение")
             }
             val journal = labels(activity.window.decorView)
-            assertTrue(journal.contains("Нужна настройка Firebase"))
+            assertTrue(journal.contains("Выберите сервис UnifiedPush"))
             assertFalse(journal.contains("Не отправлено"))
             assertFalse(journal.contains("Test body stays private"))
             screenshot("ui-notifications")
 
             click(activity, "Настройки уведомлений")
             assertTrue(device.findObject(UiSelector().description("Звук сообщений")).waitForExists(5000))
-            assertTrue(device.findObject(UiSelector().description("Звуки интерфейса")).exists())
+            assertFalse(device.findObject(UiSelector().description("Звуки интерфейса")).exists())
             toggleAndRestore(activity, "Звук сообщений")
-            toggleAndRestore(activity, "Звуки интерфейса")
             device.findObject(UiSelector().resourceId("android:id/button2")).click()
         } catch (error: Throwable) {
             device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "v7-notification-failure.xml"))

@@ -18,6 +18,8 @@ data class CallState(
     val configReady: Boolean = false,
     val mediaReady: Boolean = false,
     val serverProtocol: Int = 0,
+    val displayName: String = "",
+    val pushReady: Boolean = false,
     val callsEnabled: Boolean = true,
     val chatEnabled: Boolean = true,
     val maxParticipants: Int = 8,

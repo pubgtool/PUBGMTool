@@ -275,12 +275,20 @@
     <string name="connection_offline">Нет связи с сервисом</string>
     <string name="push_title">Фоновые уведомления</string>
     <string name="push_ready">Push настроен</string>
-    <string name="push_missing">Нужна настройка Firebase</string>
+    <string name="push_missing">Выберите сервис UnifiedPush</string>
     <string name="push_active_hint">Push подключён. Доставка зависит от сети, разрешений Android и настроек сервера.</string>
     <string name="push_import">Импортировать настройки push</string>
-    <string name="push_import_hint">Содержимое google-services.json для app.line. Не вставляйте приватный ключ сервера.</string>
+    <string name="push_import_hint">Push без Google: выберите установленный ntfy или другой дистрибьютор UnifiedPush.</string>
     <string name="connection_import">Изменить код подключения</string>
     <string name="connection_summary">Номер и история сохраняются. Проверка подключения не меняет ключи.</string>
     <string name="legacy_api_notice">Подключено к серверу 0.6. Звонки и онлайн-чат доступны; серверная очередь и push требуют обновления API.</string>
     <string name="delivery_issue">Сообщение не передано. Оно сохранено в очереди и будет повторено при подключении.</string>
+    <string name="profile_name">Имя профиля</string>
+    <string name="profile_name_hint">Это имя будет видно людям, которые открывают ваш контакт.</string>
+    <string name="interface_settings">Интерфейс</string>
+    <string name="select_push_provider">Выбрать push-сервис</string>
+    <string name="push_install_distributor">Установите ntfy из F-Droid или официального источника, откройте его и выберите здесь. Google/Firebase не используется.</string>
+    <string name="api_update_notice">Нужно обновить только API. Номера, история, домен и LiveKit сохраняются.</string>
+    <string name="cannot_call_self">Нельзя звонить своему номеру. Введите номер собеседника.</string>
+    <string name="number_not_found">Такой номер не зарегистрирован в этом сервисе.</string>
 </resources>

@@ -275,12 +275,20 @@
     <string name="connection_offline">Қызметпен байланыс жоқ</string>
     <string name="push_title">Фондық хабарландырулар</string>
     <string name="push_ready">Push бапталған</string>
-    <string name="push_missing">Firebase баптауы қажет</string>
+    <string name="push_missing">UnifiedPush қызметін таңдаңыз</string>
     <string name="push_active_hint">Push қосылған. Жеткізу желіге, Android рұқсаттарына және сервер баптауына байланысты.</string>
     <string name="push_import">Push баптауын импорттау</string>
-    <string name="push_import_hint">app.line үшін google-services.json. Сервердің құпия кілтін енгізбеңіз.</string>
+    <string name="push_import_hint">Google-сіз push: орнатылған ntfy немесе басқа UnifiedPush таратқышын таңдаңыз.</string>
     <string name="connection_import">Қосылым кодын өзгерту</string>
     <string name="connection_summary">Нөміріңіз бен тарихыңыз сақталады. Қосылымды тексеру кілттерді өзгертпейді.</string>
     <string name="legacy_api_notice">0.6 серверіне қосылды. Қоңыраулар мен онлайн чат қолжетімді; сервер кезегі мен push үшін API жаңартуы қажет.</string>
     <string name="delivery_issue">Хабарлама жіберілмеді. Ол кезекте сақталады және қосылғанда қайта жіберіледі.</string>
+    <string name="profile_name">Профиль аты</string>
+    <string name="profile_name_hint">Сіздің байланысыңызды ашқан адамдар осы атты көреді.</string>
+    <string name="interface_settings">Интерфейс</string>
+    <string name="select_push_provider">Push қызметін таңдау</string>
+    <string name="push_install_distributor">F-Droid немесе ресми дереккөзден ntfy орнатыңыз, оны ашып, осында таңдаңыз. Google/Firebase қолданылмайды.</string>
+    <string name="api_update_notice">Тек API жаңартылуы қажет. Нөмірлер, тарих, домен және LiveKit сақталады.</string>
+    <string name="cannot_call_self">Өз нөміріңізге қоңырау шалуға болмайды. Байланыс адамының нөмірін енгізіңіз.</string>
+    <string name="number_not_found">Бұл нөмір осы қызметте тіркелмеген.</string>
 </resources>

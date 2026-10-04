@@ -1,6 +1,6 @@
 # LINE signaling and encrypted relay
 
-Node 24 service for registration, public Signal key-bundle discovery, a persistent encrypted-message mailbox, optional Firebase Cloud Messaging wake-ups, and fixed-roster LiveKit audio rooms. The server never receives private identity/session keys, plaintext chat, SDP, or media. It does retain ciphertext for up to seven days, public bundles, account-to-number mappings, push tokens, and routing metadata; it is not anonymous or zero-metadata.
+Node 24 service for registration, public Signal key-bundle discovery, a persistent encrypted-message mailbox, optional self-hosted push wake-ups, and fixed-roster LiveKit audio rooms. The server never receives private identity/session keys, plaintext chat, SDP, or media. It does retain ciphertext for up to seven days, public bundles, account-to-number mappings, push endpoints, profile names, and routing metadata; it is not anonymous or zero-metadata.
 
 ## Run and test
 
@@ -17,10 +17,10 @@ The service listens on `0.0.0.0:3000`. `GET /` and `/health` return only `{"stat
 
 | Variable | Meaning |
 | --- | --- |
-| `DATA_FILE` | Persistent versioned JSON store. Defaults to `server/data/identities.json`; contains SHA-256 installation-token hashes, 8-digit numbers, and public key bundles only. |
+| `DATA_FILE` | Persistent versioned JSON store. Defaults to `server/data/identities.json`; contains SHA-256 installation-token hashes, 8-digit numbers, public key bundles, and optional user-chosen display names. |
 | `MAILBOX_FILE` | Atomic mode-`0600` encrypted-message queue; defaults to `${DATA_FILE}.mailbox.json`. Holds at most 1,000 messages total and 100 per recipient for up to seven days, plus at most 5,000 delivery receipts. |
-| `PUSH_TOKEN_FILE` | Atomic mode-`0600` account-to-FCM-token store; defaults to `${DATA_FILE}.push.json`. The file contains sensitive device tokens and must be protected with the identity store. |
-| `FCM_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS` | Optional pair enabling Android push. Point the latter at a protected Google service-account JSON file outside the repository. Both unset disables FCM without disabling queued messages; configuring only one or an unreadable credential file prevents startup. See [`../docs/PUSH-SETUP.md`](../docs/PUSH-SETUP.md). |
+| `PUSH_ALLOWED_ORIGINS` | Comma-separated exact HTTPS origins allowed for push endpoints, e.g. `https://push.example.org`. Unset/empty disables push. Wildcards, IP-literal hosts, private DNS answers, endpoint URLs with credentials/query/fragment, and non-topic paths are rejected. |
+| `PUSH_ENDPOINT_FILE` | Atomic mode-`0600` account-to-push-endpoint store; defaults to `${DATA_FILE}.push.json`. The legacy `PUSH_TOKEN_FILE` variable is still accepted as a path alias. Existing FCM token values are discarded on startup without changing identity or admin data. |
 | `PORT`, `HOST` | HTTP listen port and interface; defaults to `3000` and `0.0.0.0`. |
 | `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. Plain `ws://` is rejected. |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Server-only LiveKit credentials. Keep the secret off clients. If any media setting is missing or invalid, registration and messaging still work but joining returns `media_not_configured`. |
@@ -74,7 +74,17 @@ All messages are JSON text. Registration is required within 10 seconds. Maximum 
 }
 ```
 
-Version 7 clients register with the additional field `"protocolVersion": 7`. Their `registered` response includes `pushEnabled`, which is true only when FCM is configured and this account already has a token. Version-6 clients may omit the field and retain the legacy `sent` response. `mediaReady` reflects valid LiveKit configuration, not network availability. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array). For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
+Clients send `"protocolVersion": 7` for delivery receipts and inbox sync, or `8` for direct push endpoint registration. Every `registered` response advertises `apiVersion: 8`; it also includes the account's `displayName`. `pushEnabled` is true only when push is configured and this account has an endpoint. Version-6 clients may omit `protocolVersion` and retain the legacy `sent` response. `mediaReady` reflects valid LiveKit configuration, not network availability. `keys` with the same bundle shape updates the registered user's public bundle; changing `identityKey` is rejected. Prekey IDs must increase monotonically: a persisted high-water mark prevents registration/key updates from republishing issued keys. The server validates structure/encoding, not signatures; clients verify signatures and compare SAS out of band. A `lookup` normally consumes exactly one prekey and returns it as `bundle.preKey` (also in a one-element legacy `preKeys` array) and the peer's `displayName`. For SAS and existing sessions, send `consumePreKey: false`: only public identity/signed/Kyber keys are returned without consuming a key or requiring a nonempty pool. Consuming an empty pool returns `prekeys_exhausted`; unknown numbers return `not_found`.
+
+Registered users may set or clear their own visible name:
+
+`requestId` is a client-generated UUID.
+
+```json
+{ "type": "profile_update", "requestId": "<uuid>", "displayName": "Alex" }
+```
+
+The server trims and NFC-normalizes names, limits them to 40 Unicode code points, and rejects control and bidirectional override characters. A successful update is stored additively in the version-2 identity file and returns `profile_updated`. `peer_info` accepts a peer number and UUID `requestId`, and returns `{ "type": "peer_info", "peer": "12345678", "exists": true, "displayName": "Alex", "online": true }`; self-lookups and unknown or blocked peers are rejected. Names are untrusted display text, not verified identities.
 
 ### Encrypted messages
 
@@ -90,7 +100,7 @@ Only ciphertext bodies of up to 24 KiB decoded are accepted, and the recipient m
 
 Only the addressed recipient can acknowledge a pending envelope. The server atomically removes it, stores a seven-day delivery receipt, and notifies an online version-7 sender with `{ "type": "delivered", "id": "550e8400-e29b-41d4-a716-446655440000" }`; receipts are also replayed to the sender after reconnect. `queued` means durable server acceptance, not recipient delivery. For legacy version-6 clients the server returns `sent` after durable acceptance, but they do not send delivery acknowledgements; upgrade both clients to version 7 for delivery status and eventual mailbox cleanup. Messages expire after seven days. Unknown recipients return `not_found`; full queues return `mailbox_full`.
 
-When FCM is configured and the recipient is offline, the server sends only generic data `{ "kind": "message", "id": "550e8400-e29b-41d4-a716-446655440000" }`; no sender number or ciphertext is included. Push is a wake-up hint, not message storage: clients must reconnect and fetch the queued envelope. See [`../docs/PUSH-SETUP.md`](../docs/PUSH-SETUP.md).
+When push is configured and the recipient is offline, the server sends only generic data `{ "kind": "message", "id": "550e8400-e29b-41d4-a716-446655440000" }`; no sender number or ciphertext is included. Push is a wake-up hint, not message storage: clients must reconnect and fetch the queued envelope. Version-7 clients cannot register their legacy push tokens; use the version-8 endpoint flow described in [`../docs/PUSH-NO-GOOGLE.md`](../docs/PUSH-NO-GOOGLE.md).
 
 Protocol-7 clients can request another authenticated inbox pass after verifying a peer:
 
@@ -98,7 +108,7 @@ Protocol-7 clients can request another authenticated inbox pass after verifying 
 { "type": "inbox_sync" }
 ```
 
-The server re-announces any pending incoming call first, then sends unexpired delivery receipts and queued ciphertext, and finally `{ "type": "inbox_complete" }`. The same completion event follows the initial `registered` response after the server queues those pending events. WebSocket ordering lets the client process queued ciphertext serially before treating the sync as complete. Sync requests are limited to 10 per account per minute; older protocol versions cannot request a sync. Sync does not modify the account's FCM token. Receipts expire after seven days and are capped at 5,000 records, so a later sync may replay a still-retained receipt but cannot reset its retention window.
+The server re-announces any pending incoming call first, then sends unexpired delivery receipts and queued ciphertext, and finally `{ "type": "inbox_complete" }`. The same completion event follows the initial `registered` response after the server queues those pending events. WebSocket ordering lets the client process queued ciphertext serially before treating the sync as complete. Sync requests are limited to 10 per account per minute; older protocol versions cannot request a sync. Sync does not modify the account's push endpoint. Receipts expire after seven days and are capped at 5,000 records, so a later sync may replay a still-retained receipt but cannot reset its retention window.
 
 ### Fixed-roster group audio calls
 
@@ -106,15 +116,15 @@ The server re-announces any pending incoming call first, then sends unexpired de
 { "type": "create_call", "members": ["12345678", "87654321"] }
 ```
 
-One to seven distinct existing, unblocked numbers other than the caller are allowed, for a maximum room size of eight. Online invitees must not be in another call. Offline invitees are allowed only with an FCM token registered for their own account and configured FCM; the LiveKit room is created before invitations are sent. `call_created` goes to the owner, `incoming` to online invitees, and an opaque `{ "kind": "call", "id": "550e8400-e29b-41d4-a716-446655440000" }` push wake-up to offline invitees. The roster is fixed. A reconnecting invitee receives the pending invitation and can join before the 45-second ring timeout. A callee disconnect before accepting does not end the ring; owner or joined-member disconnect, `leave_call`, `decline_call`, or timeout ends the call and triggers best-effort LiveKit room deletion. An ended offline invitation may receive `{ "kind": "call_ended", "id": "550e8400-e29b-41d4-a716-446655440000" }` so the client can dismiss its incoming-call notification. Each member sends `{ "type": "join_call", "callId": "550e8400-e29b-41d4-a716-446655440000" }` and receives a room-scoped grant; outsiders cannot obtain a token. Without valid LiveKit configuration the server returns `media_not_configured` before it creates or pushes a call.
+One to seven distinct existing, unblocked numbers other than the caller are allowed, for a maximum room size of eight. Online invitees must not be in another call. Offline invitees are allowed only when a push endpoint is registered for their account; the LiveKit room is created before invitations are sent. `call_created` goes to the owner, `incoming` to online invitees, and an opaque `{ "kind": "call", "id": "550e8400-e29b-41d4-a716-446655440000" }` push wake-up to offline invitees. The roster is fixed. A reconnecting invitee receives the pending invitation and can join before the 45-second ring timeout. A callee disconnect before accepting does not end the ring; owner or joined-member disconnect, `leave_call`, `decline_call`, or timeout ends the call and triggers best-effort LiveKit room deletion. An ended offline invitation may receive `{ "kind": "call_ended", "id": "550e8400-e29b-41d4-a716-446655440000" }` so the client can dismiss its incoming-call notification. Each member sends `{ "type": "join_call", "callId": "550e8400-e29b-41d4-a716-446655440000" }` and receives a room-scoped grant; outsiders cannot obtain a token. Without valid LiveKit configuration the server returns `media_not_configured` before it creates or pushes a call.
 
-Version-7 Android clients register a token after WebSocket registration:
+Version-8 clients register their own HTTPS endpoint after WebSocket registration:
 
 ```json
-{ "type": "push_register", "token": "<FCM registration token>" }
+{ "type": "push_register", "endpoint": "https://push.example.org/<random-topic>" }
 ```
 
-The token is bound to the authenticated WebSocket account and stored separately with mode `0600`. The response is `{ "type": "push_registered", "pushEnabled": true }` when push is configured. Invalid/unregistered FCM tokens are removed. Push data contains only `kind` and an opaque message/call ID; clients must never depend on push payloads for message content or call authorization.
+The endpoint is bound to the authenticated account and stored separately with mode `0600`. Only exact origins in `PUSH_ALLOWED_ORIGINS` are accepted; the endpoint must be HTTPS and use one 16–64 character topic path component. The server checks DNS answers at registration and each send, pins the outgoing TLS connection to a public resolved address, uses a five-second timeout, and never follows redirects. HTTP 404/410 removes that account's endpoint. The push body contains only `kind` and an opaque message/call ID; clients must never depend on push payloads for message content or call authorization. Old FCM token strings in the legacy endpoint file are ignored and removed at startup.
 
 An unset/invalid LiveKit configuration makes `join_call` return `media_not_configured`; token-service errors return `media_unavailable`. Network changes on clients should close their WebSocket promptly; dead transports are also detected by heartbeat.
 

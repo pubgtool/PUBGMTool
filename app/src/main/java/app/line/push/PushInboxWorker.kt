@@ -85,6 +85,9 @@ class PushInboxWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 }
             } ?: false
             if (!connected) return false
+            withContext(Dispatchers.Main.immediate) {
+                serviceRef.get()?.refreshPushRegistration()
+            }
             var inboxSynced = false
             withTimeoutOrNull(INBOX_SYNC_TIMEOUT_MILLIS) {
                 while (!inboxSynced) {

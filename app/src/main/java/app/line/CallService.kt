@@ -52,6 +52,9 @@ class CallService : Service() {
     private var retryJob: Job? = null
     private val lookups = mutableMapOf<String, CompletableDeferred<JSONObject>>()
     private val adminRequests = mutableMapOf<String, CompletableDeferred<JSONObject>>()
+    private val profileRequests = mutableMapOf<String, CompletableDeferred<JSONObject>>()
+    private val publicNames = mutableMapOf<String, String>()
+    private var pushRegistration: CompletableDeferred<Boolean>? = null
     private var adminExpiresAt = 0L
     private var adminEpoch = 0
     private val incoming = Channel<Pair<Int, JSONObject>>(64)
@@ -223,6 +226,8 @@ class CallService : Service() {
     private fun cancelLookups(reason: String) {
         lookups.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
         lookups.clear()
+        profileRequests.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }; profileRequests.clear()
+        pushRegistration?.complete(false); pushRegistration = null
     }
 
     private fun launchCallOperation(phase: Phase, expectedCallId: String, block: suspend (Int, String) -> Unit) {
@@ -292,7 +297,7 @@ class CallService : Service() {
             return
         }
         http = client
-        update(state.copy(online = false, mediaReady = false, serverProtocol = 0, message = "Подключение…"))
+        update(state.copy(online = false, mediaReady = false, serverProtocol = 0, pushReady = false, message = "Подключение…"))
         socket = client.newWebSocket(Request.Builder().url(endpoints.apiUrl).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 scope.launch { if (epoch == generation) {
@@ -312,15 +317,21 @@ class CallService : Service() {
                         return@launch
                     }
                     val requestId = message.optString("requestId")
-                    if (requestId.isNotEmpty() && message.optString("type") == "admin_result") {
+                    if (requestId.isNotEmpty() && message.optString("type") in setOf("profile_updated", "peer_info")) {
+                        rememberPublicName(message)
+                        profileRequests.remove(requestId)?.complete(message)
+                    } else if (requestId.isNotEmpty() && message.optString("type") == "admin_result") {
                         adminRequests.remove(requestId)?.complete(message)
                     } else if (requestId.isNotEmpty() && message.optString("type") == "bundle") {
                         val pending = lookups.remove(requestId)
                         val bundle = message.optJSONObject("bundle")
+                        rememberPublicName(message)
                         if (bundle != null) pending?.complete(bundle)
                         else pending?.completeExceptionally(IllegalStateException("Invalid bundle"))
                     } else if (requestId.isNotEmpty() && message.optString("type") == "error") {
-                        lookups.remove(requestId)?.completeExceptionally(IllegalStateException(message.optString("code")))
+                        val error = IllegalStateException(message.optString("code"))
+                        lookups.remove(requestId)?.completeExceptionally(error)
+                        profileRequests.remove(requestId)?.completeExceptionally(error)
                     } else if (!incoming.trySend(epoch to message).isSuccess) disconnected(epoch)
                 }
             }
@@ -362,6 +373,58 @@ class CallService : Service() {
     }
 
     suspend fun verified(number: String): Boolean = db { it.isVerified(number) }
+    fun publicName(number: String): String? = publicNames[number]?.takeIf { it.isNotBlank() }
+        ?: prefs.getString("public-name-$number", null)?.takeIf { it.isNotBlank() }
+
+    private fun rememberPublicName(message: JSONObject) {
+        val profile = message.optJSONObject("peer")
+        val number = profile?.optString("number") ?: message.optString("peer")
+        val name = profile?.optString("displayName") ?: message.optString("displayName")
+        if (number.matches(Regex("[0-9]{8}")) && name.isNotBlank()) {
+            publicNames[number] = name; prefs.edit().putString("public-name-$number", name).apply()
+        }
+    }
+
+    suspend fun refreshPushRegistration(): Boolean {
+        if (!state.online || state.serverProtocol < 8) return false
+        val endpoint = PushConfiguration.endpoint(this) ?: return false
+        pushRegistration?.let { return withTimeoutOrNull(5000) { it.await() } ?: false }
+        val pending = CompletableDeferred<Boolean>(); pushRegistration = pending
+        try {
+            if (!send("push_register", JSONObject().put("endpoint", endpoint))) return false
+            return withTimeoutOrNull(5000) { pending.await() } ?: false
+        } finally { if (pushRegistration === pending) pushRegistration = null }
+    }
+
+    private suspend fun profileRequest(type: String, payload: JSONObject): JSONObject {
+        check(state.online && state.serverProtocol >= 8) { "api_update_required" }
+        val id = UUID.randomUUID().toString(); val pending = CompletableDeferred<JSONObject>()
+        profileRequests[id] = pending
+        try { check(send(type, payload.put("requestId", id))); return withTimeout(10000) { pending.await() } }
+        finally { profileRequests.remove(id) }
+    }
+
+    suspend fun updateDisplayName(value: String) {
+        val name = value.trim()
+        require(name.length in 1..40 && name.none { it.isISOControl() }) { "invalid_name" }
+        val response = profileRequest("profile_update", JSONObject().put("displayName", name))
+        val saved = response.getString("displayName")
+        prefs.edit().putString("display_name", saved).apply()
+        update(state.copy(displayName = saved))
+    }
+
+    suspend fun validateRecipients(numbers: List<String>) {
+        require(numbers.isNotEmpty() && numbers.size < state.maxParticipants && numbers.distinct().size == numbers.size) { "invalid_number" }
+        for (number in numbers) {
+            require(number.matches(Regex("[0-9]{8}"))) { "invalid_number" }
+            require(number != state.number) { "self" }
+            if (state.serverProtocol >= 8) {
+                val info = profileRequest("peer_info", JSONObject().put("to", number))
+                check(info.optBoolean("exists")) { "not_found" }
+                rememberPublicName(info)
+            } else lookup(number, consumePreKey = false)
+        }
+    }
     suspend fun verifyPeer(number: String) {
         db { it.verifyPeer(number) }
         if (state.serverProtocol >= 7) { inboxReady = false; send("inbox_sync") }
@@ -396,7 +459,7 @@ class CallService : Service() {
 
     private suspend fun preparePeer(number: String) = sessionPreparation.withLock {
         val exists = db { it.hasSession(number) }
-        if (exists && !state.online) { check(db { it.isVerified(number) }) { "SAS must be verified" }; return@withLock }
+        if (exists) { check(db { it.isVerified(number) }) { "SAS must be verified" }; return@withLock }
         val bundle = lookup(number, consumePreKey = !exists)
         db {
             it.rememberPeer(number, bundle)
@@ -406,6 +469,7 @@ class CallService : Service() {
     }
 
     suspend fun sendChat(number: String, text: String) = chatSending.withLock {
+        require(number != state.number) { "self" }
         check(state.chatEnabled) { "Администратор отключил сообщения" }
         require(text.isNotBlank() && text.toByteArray().size <= 4_096)
         preparePeer(number)
@@ -423,7 +487,8 @@ class CallService : Service() {
             "inbox_complete" -> inboxReady = true
             "registered" -> {
                 registrationTimeout?.cancel()
-                val protocol = registrationHandshake?.protocolVersion ?: 7
+                val protocol = if (registrationHandshake?.protocolVersion == 6) 6
+                    else message.optInt("protocolVersion", message.optInt("apiVersion", 7))
                 registrationHandshake?.accept()
                 inboxReady = protocol < 7
                 val number = message.getString("number")
@@ -432,14 +497,16 @@ class CallService : Service() {
                 prefs.edit().putString("number", number).apply()
                 update(state.copy(number = number, online = true, mediaReady = message.optBoolean("mediaReady"),
                     callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
-                    maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8), serverProtocol = protocol, message = "В сети"))
+                    maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8), serverProtocol = protocol,
+                    displayName = message.optString("displayName", prefs.getString("display_name", "") ?: ""), message = "В сети"))
                 val outbox = db { it.outbox() }
                 chatEnvelopeIds.addAll(outbox.map { it.id })
                 if (state.chatEnabled) outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
-                if (protocol >= 7) work {
-                    val pushToken = PushConfiguration.token(this@CallService)
-                    if (!pushToken.isNullOrBlank() && state.online && state.serverProtocol >= 7) send("push_register", JSONObject().put("token", pushToken))
-                }
+                if (protocol >= 8) work { refreshPushRegistration() }
+            }
+            "push_registered" -> {
+                val ready = message.optBoolean("pushEnabled")
+                pushRegistration?.complete(ready); update(state.copy(pushReady = ready))
             }
             "capabilities" -> {
                 update(state.copy(callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
@@ -450,6 +517,10 @@ class CallService : Service() {
             "envelope" -> {
                 val from = message.getString("from")
                 val id = message.getString("id")
+                if (state.serverProtocol >= 8) work {
+                    val name = profileRequest("peer_info", JSONObject().put("to", from)).optString("displayName")
+                    if (name.isNotBlank()) { publicNames[from] = name; prefs.edit().putString("public-name-$from", name).apply() }
+                }
                 if (!db { it.isVerified(from) }) {
                     AppNotifications.showIncomingMessage(this, from, id)
                     update(state.copy(message = "Сообщение от $from отклонено: сначала сверьте SAS")); return

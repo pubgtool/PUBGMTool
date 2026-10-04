@@ -1,0 +1,13 @@
+# ntfy behind a trusted TLS reverse proxy. Use this host in
+# PUSH_ALLOWED_ORIGINS and in the endpoint URL registered by the Android app.
+base-url: https://push.example.org
+listen-http: "127.0.0.1:2586"
+behind-proxy: true
+
+# Keep topic history short; signaling sends only generic wake-up hints.
+cache-file: /var/cache/ntfy/cache.db
+cache-duration: 12h
+
+# This signaling API publishes to capability URLs without ntfy credentials.
+# Restrict network access to this service and use long, random topic names.
+auth-default-access: read-write

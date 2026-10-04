@@ -95,7 +95,7 @@ class UiFlowTest {
         SecureStore(context).use { store ->
             store.saveMessage(maria, "ui-maria-1", "Сможешь созвониться сегодня?", true, "sent")
             store.saveMessage(maria, "ui-maria-2", "Да, после семи.", false, "received")
-            store.saveMessage(maria, "ui-maria-3", "Отлично. Наберу в 19:00.", true, "sent")
+            store.saveMessage(maria, "ui-maria-3", "Отлично. Наберу в 19:00.", true, "delivered")
             store.saveMessage(alex, "ui-alex-1", "Я уже дома. Позвони, когда будет удобно.", false, "received")
             store.saveMessage(denis, "ui-denis-1", "Договорились, до завтра", true, "sent")
             assertTrue(store.conversations().count { it.peer == maria } == 1)

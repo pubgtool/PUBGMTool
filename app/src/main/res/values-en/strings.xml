@@ -275,12 +275,20 @@
     <string name="connection_offline">Service unavailable</string>
     <string name="push_title">Background notifications</string>
     <string name="push_ready">Push configured</string>
-    <string name="push_missing">Firebase setup required</string>
+    <string name="push_missing">Select a UnifiedPush service</string>
     <string name="push_active_hint">Push is configured. Delivery depends on connectivity, Android permissions and server configuration.</string>
     <string name="push_import">Import push configuration</string>
-    <string name="push_import_hint">google-services.json for app.line. Do not paste a server private key.</string>
+    <string name="push_import_hint">Push without Google: choose an installed ntfy or another UnifiedPush distributor.</string>
     <string name="connection_import">Change connection code</string>
     <string name="connection_summary">Your number and history are preserved. Checking connectivity does not change keys.</string>
     <string name="legacy_api_notice">Connected to a 0.6 server. Calls and online chat are available; the server mailbox and push require an API update.</string>
     <string name="delivery_issue">The message was not transferred. It is saved in the outbox and will retry when connected.</string>
+    <string name="profile_name">Profile name</string>
+    <string name="profile_name_hint">People who open your contact will see this name.</string>
+    <string name="interface_settings">Interface</string>
+    <string name="select_push_provider">Choose push service</string>
+    <string name="push_install_distributor">Install ntfy from F-Droid or an official source, open it and choose it here. Google/Firebase is not used.</string>
+    <string name="api_update_notice">Only the API needs updating. Numbers, history, domain and LiveKit are preserved.</string>
+    <string name="cannot_call_self">You cannot call your own number. Enter your contact’s number.</string>
+    <string name="number_not_found">This number is not registered with this service.</string>
 </resources>

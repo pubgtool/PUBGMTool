@@ -69,7 +69,7 @@ class CallServiceLifecycleTest {
             assertEquals(2, signaling.registrationPackets.size)
             val first = signaling.registrationPackets[0]
             val retry = signaling.registrationPackets[1]
-            assertEquals(7, first.getInt("protocolVersion"))
+            assertEquals(8, first.getInt("protocolVersion"))
             assertEquals(setOf("type", "token", "bundle"), retry.keys().asSequence().toSet())
             assertEquals(first.getString("token"), retry.getString("token"))
             assertEquals(first.getJSONObject("bundle").toString(), retry.getJSONObject("bundle").toString())
@@ -91,9 +91,9 @@ class CallServiceLifecycleTest {
         try {
             configure(running, signaling)
             await { running.service.state.online }
-            assertEquals(7, running.service.state.serverProtocol)
+            assertEquals(8, running.service.state.serverProtocol)
             assertEquals(1, signaling.registrationPackets.size)
-            assertEquals(7, signaling.registrationPackets.single().getInt("protocolVersion"))
+            assertEquals(8, signaling.registrationPackets.single().getInt("protocolVersion"))
         } finally { running.close(); signaling.close() }
     }
 
@@ -125,6 +125,39 @@ class CallServiceLifecycleTest {
             await { running.service.state.phase == Phase.CONNECTED }
             instrumentation.runOnMainSync { running.service.hangup() }
             await { running.service.state.phase == Phase.IDLE }
+        } finally { running.close(); signaling.close() }
+    }
+
+    @Test fun publicProfileAndRecipientValidationUseAuthenticatedApi() {
+        resetDevice()
+        val signaling = TestSignaling(LOCAL_NUMBER, TestPeer().bundle).also { it.start() }
+        val running = bindService()
+        try {
+            configure(running, signaling)
+            var denied = false
+            try { runBlocking { withContext(Dispatchers.Main) { running.service.validateRecipients(listOf(LOCAL_NUMBER)) } } }
+            catch (error: IllegalArgumentException) { denied = error.message == "self" }
+            assertTrue("Own number is rejected before contacting the API", denied)
+            denied = false
+            try { runBlocking { withContext(Dispatchers.Main) { running.service.validateRecipients(listOf("99999999")) } } }
+            catch (error: IllegalStateException) { denied = error.message == "not_found" }
+            assertTrue("Unknown registered number is rejected", denied)
+            runBlocking { withContext(Dispatchers.Main) {
+                running.service.validateRecipients(listOf(PEER_NUMBER))
+                running.service.updateDisplayName("Line Owner")
+            } }
+            assertEquals("Contact name", running.service.publicName(PEER_NUMBER))
+            assertEquals("Line Owner", running.service.state.displayName)
+            instrumentation.runOnMainSync {
+                fun nodes(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { nodes(view.getChildAt(it)) } else emptyList()
+                nodes(running.activity.window.decorView).first { it.contentDescription?.toString() == "Профиль" }.performClick()
+            }
+            instrumentation.waitForIdleSync()
+            val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: error("Screenshot unavailable")
+            java.io.File(context.filesDir, "profile-api8-test-data.png").outputStream().use {
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            }
+            bitmap.recycle()
         } finally { running.close(); signaling.close() }
     }
 
@@ -465,8 +498,17 @@ class CallServiceLifecycleTest {
                         registrationCount.incrementAndGet()
                         webSocket.send(JSONObject().put("type", "registered").put("number", number)
                             .put("mediaReady", true).put("callsEnabled", true).put("chatEnabled", true)
+                            .put("protocolVersion", if (legacyRegistration) 6 else message.optInt("protocolVersion", 6))
                             .put("maxParticipants", 8).toString())
                     }
+                    "peer_info" -> {
+                        val info = JSONObject().put("requestId", message.getString("requestId"))
+                        if (message.getString("to") == PEER_NUMBER) info.put("type", "peer_info").put("peer", PEER_NUMBER).put("exists", true).put("displayName", "Contact name")
+                        else info.put("type", "error").put("code", "not_found")
+                        webSocket.send(info.toString())
+                    }
+                    "profile_update" -> webSocket.send(JSONObject().put("type", "profile_updated")
+                        .put("requestId", message.getString("requestId")).put("displayName", message.getString("displayName")).toString())
                     "lookup" -> {
                         lookupCount.incrementAndGet()
                         if (!holdLookups && peerBundle != null) {

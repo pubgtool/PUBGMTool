@@ -32,6 +32,7 @@ import app.line.ui.Localized
 import app.line.ui.LocalizedDialog
 import app.line.ui.Motion
 import app.line.ui.RefreshPolicy
+import app.line.ui.DeliveryIcon
 import app.line.push.PushConfiguration
 import kotlinx.coroutines.*
 import java.net.URI
@@ -210,6 +211,7 @@ class MainActivity : ComponentActivity() {
             if (previous.speaker != value.speaker) renderControl(speaker, "speaker", value.speaker)
             if (value.connectedAt > 0 && previous.connectedAt == 0L) main.post(tick)
         }
+        if (target == "profile" && (previous.displayName != value.displayName || previous.pushReady != value.pushReady)) rebuild("profile", false)
         if (previous.chatVersion != value.chatVersion) {
             when (target) { "inbox" -> loadInbox(); "conversation" -> loadHistory(); "search" -> loadSearch() }
         }
@@ -254,15 +256,14 @@ class MainActivity : ComponentActivity() {
             if (screen in listOf("notifications", "search")) header.addView(iconButton("back", "Назад") { back.handleOnBackPressed() }, size(44))
             labels.addView(text(when (screen) { "notifications" -> "Уведомления"; "search" -> "Поиск сообщений"
                 else -> when (tab) { "chat" -> "Сообщения"; "profile" -> "Профиль"; else -> "Звонки" } },
-                if (screen in listOf("search", "notifications")) 24 else 34, Typeface.BOLD).apply {
-                letterSpacing = -0.04f; setPadding(0, dp(6), 0, 0)
+                if (screen in listOf("search", "notifications")) 23 else 29, Typeface.BOLD).apply {
+                letterSpacing = -0.025f; setPadding(0, dp(6), 0, 0)
             })
             header.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
             if (screen == "inbox") {
                 header.addView(iconButton("search", "Поиск сообщений") { openSearch(null) }, size(48))
                 header.addView(iconButton("compose", "Новое сообщение", WHITE) { openContactDialog() }, size(48))
             }
-            else header.addView(text("line.", 22, Typeface.BOLD).apply { letterSpacing = -0.06f })
         }
     }
 
@@ -509,7 +510,7 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(key, checked).apply() }
             })
         }
-        toggle("Звук сообщений", "message_sound"); toggle("Звуки интерфейса", "interface_sound")
+        toggle("Звук сообщений", "message_sound")
         box.addView(text("Звук входящих настраивается в Android.", 12, color = GRAY).apply { setPadding(0, dp(8), 0, dp(8)) })
         dialog().setTitle("Уведомления").setView(box).setNegativeButton("Готово", null)
             .setPositiveButton("Настройки Android") { _, _ ->
@@ -684,7 +685,9 @@ class MainActivity : ComponentActivity() {
         val identity = row().apply { background = shape(INK, 24); setPadding(dp(20), dp(22), dp(20), dp(22)) }
         identity.addView(avatar("", true), LinearLayout.LayoutParams(dp(60), dp(60)).apply { marginEnd = dp(16) })
         val account = column()
-        account.addView(text("Мой аккаунт", 18, Typeface.BOLD, WHITE).apply { setPadding(0, 0, 0, dp(8)) })
+        account.addView(text("", 22, Typeface.BOLD, WHITE).apply {
+            text = state.displayName.ifBlank { t("Мой аккаунт") }; setPadding(0, 0, 0, dp(8))
+        })
         ownNumber = text(if (state.number.isEmpty()) "Номер не назначен" else formatNumber(state.number), 13, color = 0xFFBABEBB.toInt()).apply {
             setOnClickListener { if (state.number.isNotEmpty()) copyNumber() }
         }
@@ -696,6 +699,10 @@ class MainActivity : ComponentActivity() {
         settings.addView(divider())
         settings.addView(settingsRow("Качество звука", if (state.highQuality) "Высокое" else "Для слабой сети", "speaker") { showQuality() })
         settings.addView(divider())
+        settings.addView(settingsRow(getString(R.string.profile_name), state.displayName, "person") { editProfileName() })
+        settings.addView(divider())
+        settings.addView(settingsRow(getString(R.string.interface_settings), "", "globe") { showInterfaceSettings() })
+        settings.addView(divider())
         settings.addView(settingsRow("Уведомления", "Новые звонки и сообщения", "bell") { rebuild("notifications", true) })
         settings.addView(divider())
         settings.addView(settingsRow("Язык", when (prefs.getString("language", "ru")) { "en" -> "English"; "kk" -> "Қазақша"; else -> "Русский" }, "globe") { showLanguage() })
@@ -705,8 +712,8 @@ class MainActivity : ComponentActivity() {
             info("Line $version", "Звонки и сообщения. Содержимое защищено на устройствах; сервис и сеть могут видеть участников и время соединений. Новые входящие доступны при открытом приложении.")
         })
         body.addView(settings)
-        body.addView(text(getString(R.string.push_title), 13, Typeface.BOLD).apply { setPadding(dp(4), dp(24), 0, dp(10)) })
-        body.addView(text(getString(if (state.serverProtocol == 6) R.string.legacy_api_notice else if (PushConfiguration.isConfigured(this)) R.string.push_ready else R.string.push_missing), 12, color = GRAY))
+        body.addView(settingsRow(getString(R.string.push_title), if (state.pushReady) "Настроено" else "Подключить", "bell") { choosePushProvider() },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
     }
 
     private fun connectionDetails() {
@@ -759,24 +766,39 @@ class MainActivity : ComponentActivity() {
     private fun showAdminPanel(s: CallService) {
         if (!s.isAdmin()) return
         adminPanel?.dismiss()
-        if (s.isAdmin()) dialog().setTitle("Администратор").setItems(arrayOf(t("Настройки сервиса"), getString(R.string.push_import))) { _, choice ->
-            if (choice == 0) adminPanel = AdminPanel(this, ui, s) { showManualSettings() }.also { it.show() }
-            else importPushSettings()
-        }.show()
+        if (s.isAdmin()) adminPanel = AdminPanel(this, ui, s) { showManualSettings() }.also { it.show() }
     }
 
-    private fun importPushSettings() {
-        if (service?.isAdmin() != true) return
-        val box = column().apply { setPadding(dp(24), dp(12), dp(24), dp(8)) }
-        box.addView(text(getString(R.string.push_import_hint), 12, color = GRAY))
-        val input = entry("", false).apply { maxLines = 6 }
-        box.addView(input)
-        dialog().setTitle(getString(R.string.push_import)).setView(box).setNegativeButton("Отмена", null)
-            .setPositiveButton("Сохранить") { _, _ -> action {
-                check(service?.isAdmin() == true)
-                PushConfiguration.import(this@MainActivity, input.text.toString())
-                input.setText(""); service?.reconnectNow(); if (screen == "profile") rebuild("profile", false)
-            } }.show()
+    private fun choosePushProvider() {
+        val providers = PushConfiguration.distributors(this)
+        if (providers.isEmpty()) { info(getString(R.string.select_push_provider), getString(R.string.push_install_distributor)); return }
+        AlertDialog.Builder(this).setTitle(getString(R.string.select_push_provider)).setItems(providers.map { it.second }.toTypedArray()) { _, index ->
+            PushConfiguration.selectDistributor(this, providers[index].first)
+            service?.reconnectNow()
+        }.setNegativeButton(t("Отмена"), null).show()
+    }
+
+    private fun editProfileName() {
+        val s = service ?: return
+        if (!state.online || state.serverProtocol < 8) { info(getString(R.string.profile_name), getString(R.string.api_update_notice)); return }
+        val input = entry(getString(R.string.profile_name)).apply { setText(state.displayName); filters = arrayOf(InputFilter.LengthFilter(40)) }
+        val box = column().apply {
+            setPadding(dp(24), dp(12), dp(24), dp(12)); addView(input)
+            addView(text(getString(R.string.profile_name_hint), 12, color = GRAY).apply { setPadding(0, dp(12), 0, 0) })
+        }
+        dialog().setTitle(getString(R.string.profile_name)).setView(box).setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ -> action {
+            s.updateDisplayName(input.text.toString()); hideKeyboard()
+        } }.show()
+    }
+
+    private fun showInterfaceSettings() {
+        val box = column().apply { setPadding(dp(24), dp(8), dp(24), dp(8)) }
+        box.addView(Switch(this).apply {
+            text = t("Звуки интерфейса"); contentDescription = text
+            minimumHeight = dp(56); isChecked = prefs.getBoolean("interface_sound", false)
+            setOnCheckedChangeListener { _, enabled -> prefs.edit().putBoolean("interface_sound", enabled).apply() }
+        })
+        dialog().setTitle(getString(R.string.interface_settings)).setView(box).setPositiveButton("Готово", null).show()
     }
 
     private fun callScreen() {
@@ -876,6 +898,15 @@ class MainActivity : ComponentActivity() {
         if (service == null || !state.online || !state.mediaReady) { info("Звонок недоступен", "Проверьте подключение. Сервис звонков должен быть настроен администратором."); return }
         val members = parseMembers(dial)
         if (action == "dial" && members.isEmpty()) { toast("Введите номер из 8 цифр"); return }
+        if (action == "dial" && state.number in members) { toast(getString(R.string.cannot_call_self)); return }
+        if (action == "dial") {
+            action { service?.validateRecipients(members) ?: error("Нет подключения"); requestCallPermissions(action) }
+            return
+        }
+        requestCallPermissions(action)
+    }
+
+    private fun requestCallPermissions(action: String) {
         val permissions = mutableListOf<String>()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) permissions.add(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -892,7 +923,13 @@ class MainActivity : ComponentActivity() {
         .takeIf { it.size in 1..7 && it.all { n -> n.matches(Regex("[0-9]{8}")) } && it.distinct().size == it.size } ?: emptyList()
     private fun action(block: suspend () -> Unit) { ui.launch {
         try { block() } catch (_: CancellationException) { }
-        catch (error: Exception) { toast(error.message?.takeIf { it.length < 180 } ?: "Не удалось выполнить действие. Проверьте подключение") }
+        catch (error: Exception) { toast(when (error.message) {
+            "self" -> getString(R.string.cannot_call_self)
+            "not_found" -> getString(R.string.number_not_found)
+            "invalid_number" -> t("Введите номер из 8 цифр")
+            "api_update_required" -> getString(R.string.api_update_notice)
+            else -> error.message?.takeIf { it.length < 180 } ?: t("Не удалось выполнить действие. Проверьте подключение")
+        }) }
     } }
 
     private inner class InboxAdapter : ListAdapter<ChatMessage, InboxHolder>(object : DiffUtil.ItemCallback<ChatMessage>() {
@@ -991,9 +1028,12 @@ class MainActivity : ComponentActivity() {
             val line = row()
             val bubble = column().apply { setPadding(dp(15), dp(11), dp(14), dp(8)) }
             val message = text("", 15).apply { setLineSpacing(dp(2).toFloat(), 1f) }
-            val meta = text("", 10).apply { gravity = Gravity.END; setPadding(dp(12), dp(5), 0, 0) }
-            bubble.addView(message); bubble.addView(meta); line.addView(bubble); outer.addView(date); outer.addView(line)
-            return MessageHolder(outer, date, line, bubble, message, meta)
+            val metadata = row().apply { gravity = Gravity.END; setPadding(dp(12), dp(5), 0, 0) }
+            val meta = text("", 10)
+            val delivery = DeliveryIcon(this@MainActivity)
+            metadata.addView(meta); metadata.addView(delivery, LinearLayout.LayoutParams(dp(23), dp(15)).apply { marginStart = dp(5) })
+            bubble.addView(message); bubble.addView(metadata); line.addView(bubble); outer.addView(date); outer.addView(line)
+            return MessageHolder(outer, date, line, bubble, message, meta, delivery)
         }
         override fun onBindViewHolder(holder: MessageHolder, position: Int) {
             val item = getItem(position)
@@ -1009,12 +1049,14 @@ class MainActivity : ComponentActivity() {
             holder.message.setTextColor(if (item.outgoing) WHITE else INK); holder.message.text = item.text
             holder.bubble.setOnLongClickListener { messageActions(item); true }
             holder.meta.setTextColor(if (item.outgoing) 0xFFB8B8B8.toInt() else GRAY)
-            holder.meta.text = time.format(Date(item.createdAt)) + if (item.outgoing) when (item.status) { "delivered" -> "  ✓✓"; "sent" -> "  ✓"; "failed" -> "  !"; else -> "  ·" } else ""
-            holder.meta.contentDescription = if (item.outgoing && item.status == "delivered") getString(R.string.delivery_delivered)
+            holder.meta.text = time.format(Date(item.createdAt))
+            holder.delivery.visibility = if (item.outgoing) View.VISIBLE else View.GONE
+            holder.delivery.status = item.status; holder.delivery.tint = if (item.outgoing) 0xFFB8B8B8.toInt() else GRAY
+            holder.delivery.contentDescription = if (item.outgoing && item.status == "delivered") getString(R.string.delivery_delivered)
                 else t(if (item.outgoing) when (item.status) { "sent" -> "Отправлено"; "failed" -> "Не отправлено"; else -> "Отправляется" } else "Время сообщения")
         }
     }
-    private class MessageHolder(view: View, val date: TextView, val line: LinearLayout, val bubble: LinearLayout, val message: TextView, val meta: TextView) : RecyclerView.ViewHolder(view)
+    private class MessageHolder(view: View, val date: TextView, val line: LinearLayout, val bubble: LinearLayout, val message: TextView, val meta: TextView, val delivery: DeliveryIcon) : RecyclerView.ViewHolder(view)
 
     private fun messageActions(message: ChatMessage) {
         LocalizedDialog(this).setTitle("Сообщение").setItems(arrayOf("Копировать", "Удалить на этом устройстве")) { _, which ->
@@ -1045,7 +1087,7 @@ class MainActivity : ComponentActivity() {
         if (own) addView(LineIcon(this@MainActivity, "person", WHITE), FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER))
         else addView(text(initials(peer), 18, Typeface.BOLD), FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
     }
-    private fun contactName(peer: String) = prefs.getString("contact-$peer", null)?.takeIf { it.isNotBlank() } ?: formatNumber(peer)
+    private fun contactName(peer: String) = prefs.getString("contact-$peer", null)?.takeIf { it.isNotBlank() } ?: service?.publicName(peer) ?: formatNumber(peer)
     private fun initials(peer: String): String {
         val name = prefs.getString("contact-$peer", null)
         return if (name.isNullOrBlank()) peer.takeLast(2) else name.split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1).uppercase() }
