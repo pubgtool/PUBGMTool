@@ -281,5 +281,6 @@
     <string name="push_import_hint">google-services.json for app.line. Do not paste a server private key.</string>
     <string name="connection_import">Change connection code</string>
     <string name="connection_summary">Your number and history are preserved. Checking connectivity does not change keys.</string>
+    <string name="legacy_api_notice">Connected to a 0.6 server. Calls and online chat are available; the server mailbox and push require an API update.</string>
     <string name="delivery_issue">The message was not transferred. It is saved in the outbox and will retry when connected.</string>
 </resources>

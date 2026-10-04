@@ -448,7 +448,8 @@ class MainActivity : ComponentActivity() {
         if (callsOnly) layout.addView(callTabs(true)) else {
             layout.addView(text("Новые звонки и сообщения", 14, Typeface.BOLD).apply { setPadding(0, 0, 0, dp(12)) })
             layout.addView(settingsRow("Настройки уведомлений", if (notificationsAllowed()) "Уведомления разрешены" else "Уведомления выключены", "bell") { showNotificationSettings() })
-            layout.addView(text(getString(if (PushConfiguration.isConfigured(this)) R.string.push_active_hint else R.string.push_missing), 12, color = GRAY).apply { setPadding(0, dp(8), 0, dp(14)) })
+            val pushHint = if (state.serverProtocol == 6) R.string.legacy_api_notice else if (PushConfiguration.isConfigured(this)) R.string.push_active_hint else R.string.push_missing
+            layout.addView(text(getString(pushHint), 12, color = GRAY).apply { setPadding(0, dp(8), 0, dp(14)) })
         }
         val frame = FrameLayout(this)
         layout.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -705,13 +706,14 @@ class MainActivity : ComponentActivity() {
         })
         body.addView(settings)
         body.addView(text(getString(R.string.push_title), 13, Typeface.BOLD).apply { setPadding(dp(4), dp(24), 0, dp(10)) })
-        body.addView(text(getString(if (PushConfiguration.isConfigured(this)) R.string.push_ready else R.string.push_missing), 12, color = GRAY))
+        body.addView(text(getString(if (state.serverProtocol == 6) R.string.legacy_api_notice else if (PushConfiguration.isConfigured(this)) R.string.push_ready else R.string.push_missing), 12, color = GRAY))
     }
 
     private fun connectionDetails() {
         val box = column().apply { setPadding(dp(24), dp(12), dp(24), dp(8)) }
         box.addView(text(getString(if (state.online) R.string.connection_ready else R.string.connection_offline), 18, Typeface.BOLD))
         box.addView(text(getString(R.string.connection_summary), 13, color = GRAY).apply { setPadding(0, dp(12), 0, dp(12)) })
+        if (state.serverProtocol == 6) box.addView(text(getString(R.string.legacy_api_notice), 12, color = GRAY).apply { setPadding(0, 0, 0, dp(12)) })
         val host = service?.config()?.apiUrl?.let { runCatching { URI(it).host }.getOrNull() }
         if (host != null) box.addView(text(host, 12, color = GRAY))
         dialog().setTitle("Подключение").setView(box).setNegativeButton("Готово", null)

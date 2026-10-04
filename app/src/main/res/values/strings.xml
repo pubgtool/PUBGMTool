@@ -281,5 +281,6 @@
     <string name="push_import_hint">Содержимое google-services.json для app.line. Не вставляйте приватный ключ сервера.</string>
     <string name="connection_import">Изменить код подключения</string>
     <string name="connection_summary">Номер и история сохраняются. Проверка подключения не меняет ключи.</string>
+    <string name="legacy_api_notice">Подключено к серверу 0.6. Звонки и онлайн-чат доступны; серверная очередь и push требуют обновления API.</string>
     <string name="delivery_issue">Сообщение не передано. Оно сохранено в очереди и будет повторено при подключении.</string>
 </resources>

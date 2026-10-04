@@ -48,6 +48,7 @@ class CallService : Service() {
     private var socket: WebSocket? = null
     private var generation = 0
     private var inboxReady = false
+    private var registrationHandshake: RegistrationHandshake? = null
     private var retryJob: Job? = null
     private val lookups = mutableMapOf<String, CompletableDeferred<JSONObject>>()
     private val adminRequests = mutableMapOf<String, CompletableDeferred<JSONObject>>()
@@ -282,6 +283,8 @@ class CallService : Service() {
         }
         val bundle = publicBundleProvider()
         if (epoch != generation) return
+        val handshake = RegistrationHandshake(token(), bundle)
+        registrationHandshake = handshake
         val client = httpClientFactory(endpoints)
         if (epoch != generation) {
             client.dispatcher.executorService.shutdown()
@@ -289,11 +292,11 @@ class CallService : Service() {
             return
         }
         http = client
-        update(state.copy(online = false, mediaReady = false, message = "Подключение…"))
+        update(state.copy(online = false, mediaReady = false, serverProtocol = 0, message = "Подключение…"))
         socket = client.newWebSocket(Request.Builder().url(endpoints.apiUrl).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 scope.launch { if (epoch == generation) {
-                    ws.send(JSONObject().put("type", "register").put("token", token()).put("bundle", bundle).put("protocolVersion", 7).toString())
+                    ws.send(handshake.packet().toString())
                     registrationTimeout = scope.launch { delay(15_000); if (!state.online) disconnected(epoch) }
                 } }
             }
@@ -301,6 +304,13 @@ class CallService : Service() {
                 scope.launch {
                     if (epoch != generation) return@launch
                     val message = runCatching { JSONObject(text) }.getOrNull() ?: return@launch
+                    val retry = handshake.retryForLegacy(message)
+                    if (retry != null) {
+                        registrationTimeout?.cancel()
+                        if (!ws.send(retry.toString())) { disconnected(epoch); return@launch }
+                        registrationTimeout = scope.launch { delay(15_000); if (!state.online) disconnected(epoch) }
+                        return@launch
+                    }
                     val requestId = message.optString("requestId")
                     if (requestId.isNotEmpty() && message.optString("type") == "admin_result") {
                         adminRequests.remove(requestId)?.complete(message)
@@ -354,7 +364,7 @@ class CallService : Service() {
     suspend fun verified(number: String): Boolean = db { it.isVerified(number) }
     suspend fun verifyPeer(number: String) {
         db { it.verifyPeer(number) }
-        send("inbox_sync")
+        if (state.serverProtocol >= 7) { inboxReady = false; send("inbox_sync") }
     }
     suspend fun messages(number: String, before: Long? = null): List<ChatMessage> = db { it.messages(number, before, 40) }
     suspend fun searchMessages(query: String, peer: String? = null, before: Long? = null): List<ChatMessage> =
@@ -413,19 +423,22 @@ class CallService : Service() {
             "inbox_complete" -> inboxReady = true
             "registered" -> {
                 registrationTimeout?.cancel()
+                val protocol = registrationHandshake?.protocolVersion ?: 7
+                registrationHandshake?.accept()
+                inboxReady = protocol < 7
                 val number = message.getString("number")
                 require(number.matches(Regex("[0-9]{8}")))
                 db { it.setLocalNumber(number) }
                 prefs.edit().putString("number", number).apply()
                 update(state.copy(number = number, online = true, mediaReady = message.optBoolean("mediaReady"),
                     callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
-                    maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8), message = "В сети"))
+                    maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8), serverProtocol = protocol, message = "В сети"))
                 val outbox = db { it.outbox() }
                 chatEnvelopeIds.addAll(outbox.map { it.id })
                 if (state.chatEnabled) outbox.forEach { send("envelope", JSONObject().put("to", it.peer).put("id", it.id).put("cipherType", it.cipherType).put("body", it.body)) }
-                work {
+                if (protocol >= 7) work {
                     val pushToken = PushConfiguration.token(this@CallService)
-                    if (!pushToken.isNullOrBlank() && state.online) send("push_register", JSONObject().put("token", pushToken))
+                    if (!pushToken.isNullOrBlank() && state.online && state.serverProtocol >= 7) send("push_register", JSONObject().put("token", pushToken))
                 }
             }
             "capabilities" -> {
@@ -442,7 +455,7 @@ class CallService : Service() {
                     update(state.copy(message = "Сообщение от $from отклонено: сначала сверьте SAS")); return
                 }
                 val payload = db { it.decryptAndStore(from, message.getInt("cipherType"), message.getString("body"), id) }
-                if (payload == null) { send("delivery_ack", JSONObject().put("id", id)); return }
+                if (payload == null) { if (state.serverProtocol >= 7) send("delivery_ack", JSONObject().put("id", id)); return }
                 when (payload.getString("kind")) {
                     "chat" -> {
                         require(payload.getString("id") == id)
@@ -465,7 +478,7 @@ class CallService : Service() {
                     }
                 }
                 send("keys", JSONObject().put("bundle", db { it.publicBundle() }))
-                send("delivery_ack", JSONObject().put("id", id))
+                if (state.serverProtocol >= 7) send("delivery_ack", JSONObject().put("id", id))
                 PushAlerts.dismissMessage(this, id)
             }
             "queued" -> {

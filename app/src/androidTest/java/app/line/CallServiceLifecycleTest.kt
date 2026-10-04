@@ -55,6 +55,48 @@ class CallServiceLifecycleTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
 
+    @Test fun legacyRegistrationRetriesOriginalAccountAndDoesNotSendV7Commands() {
+        resetDevice()
+        val peer = TestPeer()
+        seedPeer(peer, establishSession = true)
+        val signaling = TestSignaling(LOCAL_NUMBER, peer.bundle, legacyRegistration = true).also { it.start() }
+        val running = bindService()
+        try {
+            configure(running, signaling)
+            await { running.service.state.online }
+            assertEquals(6, running.service.state.serverProtocol)
+            assertEquals(LOCAL_NUMBER, running.service.state.number)
+            assertEquals(2, signaling.registrationPackets.size)
+            val first = signaling.registrationPackets[0]
+            val retry = signaling.registrationPackets[1]
+            assertEquals(7, first.getInt("protocolVersion"))
+            assertEquals(setOf("type", "token", "bundle"), retry.keys().asSequence().toSet())
+            assertEquals(first.getString("token"), retry.getString("token"))
+            assertEquals(first.getJSONObject("bundle").toString(), retry.getJSONObject("bundle").toString())
+            runBlocking { withContext(Dispatchers.Main) {
+                running.service.verifyPeer(PEER_NUMBER)
+                running.service.sendChat(PEER_NUMBER, "Legacy server online message")
+            } }
+            await { signaling.envelopeCount.get() == 1 }
+            await { runBlocking { withContext(Dispatchers.IO) { SecureStore(context).use { store -> store.messages(PEER_NUMBER).any { it.text == "Legacy server online message" && it.status == "sent" } } } } }
+            assertTrue(running.service.inboxSynchronized())
+            assertFalse(signaling.commandTypes.any { it in setOf("push_register", "delivery_ack", "inbox_sync") })
+        } finally { running.close(); signaling.close() }
+    }
+
+    @Test fun modernRegistrationKeepsProtocolSevenWithoutRetry() {
+        resetDevice()
+        val signaling = TestSignaling(LOCAL_NUMBER).also { it.start() }
+        val running = bindService()
+        try {
+            configure(running, signaling)
+            await { running.service.state.online }
+            assertEquals(7, running.service.state.serverProtocol)
+            assertEquals(1, signaling.registrationPackets.size)
+            assertEquals(7, signaling.registrationPackets.single().getInt("protocolVersion"))
+        } finally { running.close(); signaling.close() }
+    }
+
     @Test fun conversationCallButtonReachesCallSetupAndConnectedState() {
         resetDevice()
         context.getSharedPreferences("line-ui", 0).edit().putString("language", "ru").commit()
@@ -351,6 +393,7 @@ class CallServiceLifecycleTest {
     private inner class TestSignaling(
         private val number: String,
         private val peerBundle: JSONObject? = null,
+        private val legacyRegistration: Boolean = false,
     ) : AutoCloseable {
         private val certificate = HeldCertificate.Builder().commonName("localhost")
             .addSubjectAlternativeName("localhost").build()
@@ -364,6 +407,8 @@ class CallServiceLifecycleTest {
         private val callId = AtomicReference("")
         private val callRoom = AtomicReference("")
         val registrationCount = AtomicInteger()
+        val registrationPackets = CopyOnWriteArrayList<JSONObject>()
+        val commandTypes = CopyOnWriteArrayList<String>()
         val lookupCount = AtomicInteger()
         val createCallCount = AtomicInteger()
         val envelopeCount = AtomicInteger()
@@ -409,8 +454,14 @@ class CallServiceLifecycleTest {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 activeSocket.set(webSocket)
                 val message = JSONObject(text)
+                commandTypes += message.getString("type")
                 when (message.getString("type")) {
                     "register" -> {
+                        registrationPackets += message
+                        if (legacyRegistration && message.keys().asSequence().any { it !in setOf("type", "token", "bundle") }) {
+                            webSocket.send(JSONObject().put("type", "error").put("code", "registration_required").toString())
+                            return
+                        }
                         registrationCount.incrementAndGet()
                         webSocket.send(JSONObject().put("type", "registered").put("number", number)
                             .put("mediaReady", true).put("callsEnabled", true).put("chatEnabled", true)

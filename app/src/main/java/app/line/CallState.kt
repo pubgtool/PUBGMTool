@@ -17,6 +17,7 @@ data class CallState(
     val eventVersion: Long = 0,
     val configReady: Boolean = false,
     val mediaReady: Boolean = false,
+    val serverProtocol: Int = 0,
     val callsEnabled: Boolean = true,
     val chatEnabled: Boolean = true,
     val maxParticipants: Int = 8,

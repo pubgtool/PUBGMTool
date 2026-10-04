@@ -281,5 +281,6 @@
     <string name="push_import_hint">app.line үшін google-services.json. Сервердің құпия кілтін енгізбеңіз.</string>
     <string name="connection_import">Қосылым кодын өзгерту</string>
     <string name="connection_summary">Нөміріңіз бен тарихыңыз сақталады. Қосылымды тексеру кілттерді өзгертпейді.</string>
+    <string name="legacy_api_notice">0.6 серверіне қосылды. Қоңыраулар мен онлайн чат қолжетімді; сервер кезегі мен push үшін API жаңартуы қажет.</string>
     <string name="delivery_issue">Хабарлама жіберілмеді. Ол кезекте сақталады және қосылғанда қайта жіберіледі.</string>
 </resources>
