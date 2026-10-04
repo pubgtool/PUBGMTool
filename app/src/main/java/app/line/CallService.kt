@@ -523,6 +523,8 @@ class CallService : Service() {
             "incoming" -> {
                 if (state.phase != Phase.IDLE) return
                 setupCall(message, incoming = true)
+                PushAlerts.dismissCall(this, callId)
+                prefs.edit().putString("notification_call_id", callId).apply()
                 update(state.copy(phase = Phase.INCOMING, peer = owner, message = "Входящий групповой звонок"))
                 adoptKey()
                 if (consumePendingCallDismissal(callId)) finish("Звонок отклонён", outcome = "declined")
@@ -772,6 +774,7 @@ class CallService : Service() {
             }
         }
         if (notifyServer && callId.isNotEmpty()) send(if (state.phase == Phase.INCOMING) "decline_call" else "leave_call", JSONObject().put("callId", callId))
+        prefs.edit().remove("notification_call_id").apply()
         callId = ""; callRoom = ""; owner = ""
         roomKey?.fill(0); roomKey = null; pendingKeys.clear()
         val oldEngine = engine; engine = null

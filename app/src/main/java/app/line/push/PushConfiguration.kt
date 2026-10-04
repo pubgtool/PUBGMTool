@@ -3,8 +3,8 @@ package app.line.push
 import android.content.Context
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
-import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -74,7 +74,7 @@ object PushConfiguration {
     /** Returns a safe status string; Firebase API keys and registration tokens are never included. */
     fun status(context: Context): String? = when {
         !isConfigured(context) -> "Firebase Android configuration is not imported"
-        initializeDefaultFirebase(context) -> "Firebase push is configured"
+        initializeDefaultFirebase(context) -> "Firebase client is configured; backend delivery is not verified"
         else -> "Firebase configuration saved; restart Line to apply it"
     }
 
@@ -105,24 +105,10 @@ object PushConfiguration {
 
     suspend fun token(context: Context): String? {
         if (!initializeDefaultFirebase(context)) return null
-        registrationId(context)?.let { return it }
         return try {
-            val app = FirebaseApp.getApps(context.applicationContext)
-                .firstOrNull { it.name == FirebaseApp.DEFAULT_APP_NAME } ?: return null
-            val registered = suspendCancellableCoroutine<Boolean> { continuation ->
-                try {
-                    FirebaseMessaging.getInstance().register().addOnCompleteListener { task ->
-                        if (!continuation.isActive) return@addOnCompleteListener
-                        continuation.resume(task.isSuccessful)
-                    }
-                } catch (_: Exception) {
-                    if (continuation.isActive) continuation.resume(false)
-                }
-            }
-            if (!registered) return null
             val result = suspendCancellableCoroutine<String?> { continuation ->
                 try {
-                    FirebaseInstallations.getInstance(app).id.addOnCompleteListener { task ->
+                    FirebaseMessaging.getInstance().getToken().addOnCompleteListener { task ->
                         if (!continuation.isActive) return@addOnCompleteListener
                         continuation.resume(if (task.isSuccessful) task.result?.takeIf(String::isNotBlank) else null)
                     }
@@ -132,6 +118,8 @@ object PushConfiguration {
             }
             rememberToken(context, result)
             result
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             null
         }
@@ -141,10 +129,6 @@ object PushConfiguration {
         if (token.isNullOrBlank() || token.length > 4096) return
         preferences(context).edit().putString(REGISTRATION_TOKEN, token).apply()
     }
-
-    private fun registrationId(context: Context): String? = preferences(context)
-        .getString(REGISTRATION_TOKEN, null)
-        ?.takeIf { it.isNotBlank() && it.length <= 4096 }
 
     private fun readValues(context: Context): Values? {
         val prefs = preferences(context)

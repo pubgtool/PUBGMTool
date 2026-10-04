@@ -20,6 +20,7 @@ const DEFAULT_MAX_MAILBOX_PER_USER = 100;
 const DEFAULT_MAX_RECEIPTS = 5_000;
 const DEFAULT_MAX_INBOX_SYNCS_PER_WINDOW = 10;
 const DEFAULT_INBOX_SYNC_WINDOW_MS = 60_000;
+const MIN_PUSH_TOKEN_BYTES = 25;
 const MAX_PUSH_TOKEN_BYTES = 4_096;
 const MESSAGE_PUSH_TTL_MS = 24 * 60 * 60 * 1_000;
 const CALL_PUSH_TTL_MS = 45_000;
@@ -289,7 +290,7 @@ async function loadPushTokens(pushFile, numberOwners, blockedNumbers) {
   let dirty = false;
   for (const [number, token] of Object.entries(document.tokens)) {
     if (!NUMBER_PATTERN.test(number) || !numberOwners.has(number)
-      || typeof token !== 'string' || Buffer.byteLength(token, 'utf8') < 20
+      || typeof token !== 'string' || Buffer.byteLength(token, 'utf8') < MIN_PUSH_TOKEN_BYTES
       || Buffer.byteLength(token, 'utf8') > MAX_PUSH_TOKEN_BYTES || /[\u0000-\u0020\u007f]/.test(token)) {
       throw new Error(`Push token store contains an invalid or unknown account: ${pushFile}`);
     }
@@ -951,6 +952,16 @@ export async function createSignalingServer(options = {}) {
     }
   }
 
+  function deliverPending(session) {
+    sendPendingCalls(session);
+    sendDeliveryReceipts(session);
+    sendMailbox(session);
+  }
+
+  function sendInboxComplete(session) {
+    if (session.protocolVersion >= 7) send(session.socket, { type: 'inbox_complete' });
+  }
+
   function sendPendingCalls(session) {
     if (!adminSettings.callsEnabled || blockedNumbers.has(session.number)) return;
     const callId = memberships.get(session.number);
@@ -963,9 +974,32 @@ export async function createSignalingServer(options = {}) {
   }
 
   function resumeSession(session) {
-    sendDeliveryReceipts(session);
-    sendMailbox(session);
-    sendPendingCalls(session);
+    deliverPending(session);
+    sendInboxComplete(session);
+  }
+
+  function takeInboxSyncSlot(number) {
+    const now = Date.now();
+    let bucket = inboxSyncRates.get(number);
+    if (!bucket && inboxSyncRates.size >= maxRateLimitEntries) {
+      for (const [key, candidate] of inboxSyncRates) {
+        if (now - candidate.start >= inboxSyncWindowMs) inboxSyncRates.delete(key);
+        if (inboxSyncRates.size < maxRateLimitEntries) break;
+      }
+      if (inboxSyncRates.size >= maxRateLimitEntries) return false;
+    }
+    return consumeRateLimit(inboxSyncRates, number, {
+      limit: maxInboxSyncsPerWindow,
+      windowMs: inboxSyncWindowMs,
+      now,
+    });
+  }
+
+  function syncInbox(session) {
+    if (session.protocolVersion < 7) return error(session.socket, 'invalid_message');
+    if (!takeInboxSyncSlot(session.number)) return error(session.socket, 'rate_limited');
+    deliverPending(session);
+    sendInboxComplete(session);
   }
 
   async function registerPushToken(session, value) {
@@ -973,7 +1007,7 @@ export async function createSignalingServer(options = {}) {
       send(session.socket, { type: 'push_registered', pushEnabled: false });
       return;
     }
-    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') < 20
+    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') < MIN_PUSH_TOKEN_BYTES
       || Buffer.byteLength(value, 'utf8') > MAX_PUSH_TOKEN_BYTES || /[\u0000-\u0020\u007f]/.test(value)) {
       return error(session.socket, 'invalid_push_token');
     }
@@ -1375,6 +1409,10 @@ export async function createSignalingServer(options = {}) {
       case 'push_register':
         if (session.protocolVersion < 7 || !hasOnlyKeys(message, ['type', 'token'])) return error(session.socket, 'invalid_message');
         return queueStoreOperation(session, () => registerPushToken(session, message.token),
+          (code) => error(session.socket, code));
+      case 'inbox_sync':
+        if (session.protocolVersion < 7 || !hasOnlyKeys(message, ['type'])) return error(session.socket, 'invalid_message');
+        return queueStoreOperation(session, () => syncInbox(session),
           (code) => error(session.socket, code));
       case 'create_call':
         if (!hasOnlyKeys(message, ['type', 'members'])) return error(session.socket, 'invalid_message');

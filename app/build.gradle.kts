@@ -40,10 +40,8 @@ android {
 }
 
 dependencies {
-    implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("com.google.firebase:firebase-installations")
-    implementation("androidx.work:work-runtime:2.12.0")
+    implementation("com.google.firebase:firebase-messaging:25.0.1")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("io.livekit:livekit-android:2.29.0")
     implementation("org.signal:libsignal-client:0.104.0")

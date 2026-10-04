@@ -4,14 +4,8 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 class LineFirebaseMessagingService : FirebaseMessagingService() {
-    @Deprecated("Use the FCM installation registration callback")
     override fun onNewToken(token: String) {
         PushConfiguration.rememberToken(this, token)
-        PushInboxWorker.enqueue(this)
-    }
-
-    override fun onRegistered(installationId: String) {
-        PushConfiguration.rememberToken(this, installationId)
         PushInboxWorker.enqueue(this)
     }
 
@@ -22,7 +16,14 @@ class LineFirebaseMessagingService : FirebaseMessagingService() {
         when (data["kind"]) {
             "message" -> PushAlerts.showMessage(this, id)
             "call" -> PushAlerts.showCall(this, id)
-            "call_ended" -> PushAlerts.dismissCall(this, id)
+            "call_ended" -> {
+                PushAlerts.dismissCall(this, id)
+                val prefs = getSharedPreferences("line", MODE_PRIVATE)
+                if (prefs.getString("notification_call_id", null) == id) {
+                    app.line.AppNotifications.cancelIncomingCall(this)
+                    prefs.edit().remove("notification_call_id").apply()
+                }
+            }
             else -> return
         }
         PushInboxWorker.enqueue(this)

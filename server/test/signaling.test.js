@@ -377,6 +377,82 @@ test('version-6 clients retain sent acknowledgements while their ciphertext is d
   assert.equal(JSON.parse(await readFile(join(resource.directory, 'identities.json.mailbox.json'), 'utf8')).envelopes.length, 1);
   assert.deepEqual(await sendRequest(recipient, { type: 'delivery_ack', id: message.id },
     (item) => item.type === 'error'), { type: 'error', code: 'invalid_message', id: message.id });
+  assert.deepEqual(await sendRequest(recipient, { type: 'inbox_sync' },
+    (item) => item.type === 'error'), { type: 'error', code: 'invalid_message' });
+});
+
+test('version-7 registration and authenticated inbox sync deliver calls, receipts, and ciphertext before inbox_complete', async () => {
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    pushSender: async () => {},
+    createRoom: async () => {},
+    deleteRoom: () => {},
+    ringingTimeoutMs: 5_000,
+    maxInboxSyncsPerWindow: 1,
+  });
+  const owner = await openSocket(resource);
+  const peer = await openSocket(resource);
+  const member = await openSocket(resource);
+  await register(owner, token('7'), bundle(76, 0), 7);
+  const peerInfo = await register(peer, token('8'), bundle(77, 0), 7);
+  const memberInfo = await register(member, token('9'), bundle(78, 0), 7);
+  await sendRequest(member, { type: 'push_register', token: 'fcm-registration-token-0123456789abcdef' },
+    (item) => item.type === 'push_registered');
+
+  const deliveredToPeer = waitFor(peer, (item) => item.type === 'envelope' && item.id === uuid(7_601));
+  const receipt = waitFor(member, (item) => item.type === 'delivered' && item.id === uuid(7_601));
+  member.send(JSON.stringify({ type: 'envelope', to: peerInfo.number, id: uuid(7_601),
+    cipherType: 2, body: base64('receipt-ciphertext') }));
+  await deliveredToPeer;
+  peer.send(JSON.stringify({ type: 'delivery_ack', id: uuid(7_601) }));
+  await receipt;
+  await closeSocket(member);
+
+  const queuedEnvelope = { type: 'envelope', to: memberInfo.number, id: uuid(7_602),
+    cipherType: 3, body: base64('offline-ciphertext') };
+  assert.equal((await sendRequest(peer, queuedEnvelope, (item) => item.type === 'queued')).type, 'queued');
+  const callCreated = waitFor(owner, (item) => item.type === 'call_created');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  const call = await callCreated;
+
+  const reconnected = await openSocket(resource);
+  const registrationEvents = [];
+  reconnected.on('message', (data) => registrationEvents.push(JSON.parse(data.toString())));
+  const registrationComplete = waitFor(reconnected, (item) => item.type === 'inbox_complete');
+  const registered = await register(reconnected, token('9'), bundle(78, 0), 7);
+  const completed = await registrationComplete;
+  assert.equal(registered.pushEnabled, true);
+  assert.deepEqual(completed, { type: 'inbox_complete' });
+  const registrationTypes = registrationEvents.map((item) => item.type);
+  assert.ok(registrationTypes.indexOf('incoming') < registrationTypes.indexOf('delivered'));
+  assert.ok(registrationTypes.indexOf('delivered') < registrationTypes.indexOf('envelope'));
+  assert.ok(registrationTypes.indexOf('envelope') < registrationTypes.indexOf('inbox_complete'));
+  assert.ok(registrationEvents.some((item) => item.type === 'incoming' && item.callId === call.callId));
+  assert.ok(registrationEvents.some((item) => item.type === 'delivered' && item.id === uuid(7_601)));
+  assert.ok(registrationEvents.some((item) => item.type === 'envelope' && item.id === queuedEnvelope.id));
+
+  assert.deepEqual(await sendRequest(reconnected, { type: 'inbox_sync', extra: true },
+    (item) => item.type === 'error'), { type: 'error', code: 'invalid_message' });
+  const syncStart = registrationEvents.length;
+  const repeatedEnvelope = waitFor(reconnected,
+    (item) => item.type === 'envelope' && item.id === queuedEnvelope.id);
+  const syncComplete = waitFor(reconnected, (item) => item.type === 'inbox_complete');
+  reconnected.send(JSON.stringify({ type: 'inbox_sync' }));
+  await repeatedEnvelope;
+  await syncComplete;
+  const syncEvents = registrationEvents.slice(syncStart);
+  assert.deepEqual(syncEvents.map((item) => item.type), ['incoming', 'delivered', 'envelope', 'inbox_complete']);
+  assert.equal(JSON.parse(await readFile(join(resource.directory, 'identities.json.push.json'), 'utf8'))
+    .tokens[memberInfo.number], 'fcm-registration-token-0123456789abcdef');
+
+  assert.deepEqual(await sendRequest(reconnected, { type: 'inbox_sync' },
+    (item) => item.type === 'error'), { type: 'error', code: 'rate_limited' });
+  const grant = await sendRequest(reconnected, { type: 'join_call', callId: call.callId },
+    (item) => item.type === 'room_grant' || item.type === 'error');
+  assert.equal(grant.type, 'room_grant');
+  const ended = waitFor(owner, (item) => item.type === 'ended' && item.callId === call.callId);
+  reconnected.send(JSON.stringify({ type: 'decline_call', callId: call.callId }));
+  assert.deepEqual(await ended, { type: 'ended', callId: call.callId, reason: 'declined' });
 });
 
 test('expired mailbox ciphertext is pruned on restart without being delivered', async () => {
@@ -426,10 +502,20 @@ test('push is optional, account-bound, and sends only generic offline wake-up da
   const recipient = await openSocket(enabled);
   await register(sender, token('4'), bundle(61, 0), 7);
   const recipientInfo = await register(recipient, token('5'), bundle(62, 0), 7);
+  const tooShortPushToken = 'x'.repeat(24);
   const registeredPush = await sendRequest(recipient, {
+    type: 'push_register', token: tooShortPushToken,
+  }, (item) => item.type === 'error');
+  assert.deepEqual(registeredPush, { type: 'error', code: 'invalid_push_token' });
+  const validPushToken = 'x'.repeat(25);
+  const validPush = await sendRequest(recipient, {
+    type: 'push_register', token: validPushToken,
+  }, (item) => item.type === 'push_registered');
+  assert.deepEqual(validPush, { type: 'push_registered', pushEnabled: true });
+  const registeredPushAgain = await sendRequest(recipient, {
     type: 'push_register', token: 'fcm-device-token-0123456789abcdef',
   }, (item) => item.type === 'push_registered');
-  assert.deepEqual(registeredPush, { type: 'push_registered', pushEnabled: true });
+  assert.deepEqual(registeredPushAgain, { type: 'push_registered', pushEnabled: true });
   const pushFile = join(enabled.directory, 'identities.json.push.json');
   assert.equal((await stat(pushFile)).mode & 0o777, 0o600);
   assert.equal(JSON.parse(await readFile(pushFile, 'utf8')).tokens[recipientInfo.number], 'fcm-device-token-0123456789abcdef');

@@ -1,6 +1,6 @@
 # Android push notifications
 
-Line 0.7 includes Firebase Cloud Messaging (FCM) delivery and a bounded background wake-up path. Push is deliberately limited to a generic alert plus a request for the existing `CallService` to reconnect and process its encrypted inbox; message text, peer numbers, URLs, and call media are never included in an FCM payload. The background worker only binds the existing service, waits up to 20 seconds for its normal socket registration, and keeps it bound for at most three more seconds. It does not start a microphone foreground service or answer a call in the background.
+Line 0.7 includes Firebase Cloud Messaging (FCM) delivery and a bounded background wake-up path. Push is deliberately limited to a generic alert plus a request for the existing `CallService` to reconnect and process its encrypted inbox; message text, peer numbers, URLs, and call media are never included in an FCM payload. The background worker binds the existing service, waits up to 20 seconds for its normal socket registration and up to 10 more seconds for its inbox-complete acknowledgement. It does not start a microphone foreground service or answer a call in the background.
 
 ## Firebase Android configuration
 
@@ -10,11 +10,11 @@ Line 0.7 includes Firebase Cloud Messaging (FCM) delivery and a bounded backgrou
 
 Only the Android client configuration is accepted. A service-account JSON, `private_key`, or `client_email` is rejected. Do not put Firebase Admin SDK credentials or an FCM server key in the APK, the Android preferences, or the import UI. The client API key is not a server credential; protect it with the restrictions supported for the Firebase project.
 
-The push status API is `PushConfiguration.status(context)`; it never returns the API key or FCM registration ID. `PushConfiguration.token(context)` is suspendable and returns the current Firebase Installation ID (FID) for the service integration. Firebase Messaging is configured for the current FID registration API; `onRegistered` stores refreshed IDs privately and enqueues a worker to bring the normal service online. The deprecated `onNewToken` callback remains as a legacy fallback.
+`PushConfiguration.status(context)` reports the Firebase client setup state without returning the API key or registration token; client setup alone does not verify server delivery. `PushConfiguration.token(context)` is suspendable and returns the FCM registration token expected by Firebase Admin. Firebase Messaging's `onNewToken` callback stores refreshed tokens privately and enqueues a worker to bring the normal service online. The service registers that token with the authenticated signaling socket after it connects.
 
 ## Backend and payload contract
 
-The backend must accept the service's `push_register` WebSocket message and associate that device registration ID (the FID carried in the existing `token` field) with the authenticated Line account. It must send Android data-only FCM messages at high priority, with exactly these data keys:
+The backend must accept the service's `push_register` WebSocket message and associate that device's FCM registration token with the authenticated Line account. It must send Android data-only FCM messages at high priority, with exactly these data keys:
 
 | `kind` | `id` | Effect |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Users must allow Android notifications and leave the app's notification channels
 
 ## Pinned Android artifacts
 
-- Firebase Android BoM `34.19.0`, `firebase-messaging` managed by the BoM.
-- AndroidX WorkManager `2.12.0`.
+- Firebase Messaging `25.0.1`.
+- AndroidX WorkManager KTX `2.12.0`.
 
-These are the stable versions listed by the [Firebase Android release notes](https://firebase.google.com/support/release-notes/android) and [AndroidX WorkManager release information](https://developer.android.com/jetpack/androidx/releases/work). The [Firebase Messaging API reference](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessaging) documents the current `register()` API; its service callback is documented in the [FirebaseMessagingService reference](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessagingService).
+The artifacts are pinned to exact versions from [Google Maven](https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-messaging/maven-metadata.xml) and [AndroidX WorkManager release information](https://developer.android.com/jetpack/androidx/releases/work). The [Firebase Messaging API reference](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessaging) documents `getToken()` and its service callback is documented in the [FirebaseMessagingService reference](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessagingService).

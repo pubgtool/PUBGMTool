@@ -272,7 +272,7 @@ class SecureStore(context: Context) : AutoCloseable {
         validId(id)
         return transaction {
             ensureLocalIdentity()
-            requireVerified(peer)
+            requireVerified(peer, requireSession = false)
             val previous = findMessage(id)
             if (previous != null) {
                 check(previous.peer == peer && !previous.outgoing) { "Message id is already assigned to another record" }
@@ -701,7 +701,7 @@ class SecureStore(context: Context) : AutoCloseable {
     }
 
     private fun decryptInternal(peer: String, cipherType: Int, body: String): ByteArray {
-        requireVerified(peer)
+        requireVerified(peer, requireSession = cipherType != CiphertextMessage.PREKEY_TYPE)
         val serialized = decode(body)
         val remote = SignalProtocolAddress(peer, DEVICE_ID)
         val local = SignalProtocolAddress(localNumber(), DEVICE_ID)
@@ -788,9 +788,9 @@ class SecureStore(context: Context) : AutoCloseable {
             .displayableFingerprint.displayText
     }
 
-    private fun requireVerified(peer: String) {
+    private fun requireVerified(peer: String, requireSession: Boolean = true) {
         check(protocolStore.isVerified(peer)) { "Peer safety code must be verified before sending" }
-        check(protocolStore.containsSession(SignalProtocolAddress(peer, DEVICE_ID))) {
+        check(!requireSession || protocolStore.containsSession(SignalProtocolAddress(peer, DEVICE_ID))) {
             "No Signal session for peer; establish one before sending"
         }
     }

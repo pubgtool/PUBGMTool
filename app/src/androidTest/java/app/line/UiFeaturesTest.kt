@@ -101,11 +101,15 @@ class UiFeaturesTest {
             screenshot("ui-notifications")
 
             click(activity, "Настройки уведомлений")
-            assertTrue(device.findObject(UiSelector().text("Звук сообщений")).waitForExists(5000))
-            assertTrue(device.findObject(UiSelector().text("Звуки интерфейса")).exists())
+            assertTrue(device.findObject(UiSelector().description("Звук сообщений")).waitForExists(5000))
+            assertTrue(device.findObject(UiSelector().description("Звуки интерфейса")).exists())
             toggleAndRestore(activity, "Звук сообщений")
             toggleAndRestore(activity, "Звуки интерфейса")
             device.findObject(UiSelector().resourceId("android:id/button2")).click()
+        } catch (error: Throwable) {
+            device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "v7-notification-failure.xml"))
+            screenshot("v7-notification-failure")
+            throw error
         } finally {
             finish(activity)
             SecureStore(context).use { it.clearConversation(peer) }
@@ -231,7 +235,7 @@ class UiFeaturesTest {
     }
 
     private fun toggleAndRestore(activity: MainActivity, label: String) {
-        val selector = UiSelector().text(label)
+        val selector = UiSelector().description(label)
         assertTrue("Missing notification switch: $label", device.findObject(selector).waitForExists(5000))
         val control = device.findObject(selector)
         val previous = control.isChecked

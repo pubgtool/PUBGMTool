@@ -18,9 +18,6 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false">
-        <meta-data
-            android:name="firebase_messaging_installation_id_enabled"
-            android:value="true" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

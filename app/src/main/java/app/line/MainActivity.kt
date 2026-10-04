@@ -503,7 +503,7 @@ class MainActivity : ComponentActivity() {
         val box = column().apply { setPadding(dp(24), dp(8), dp(24), dp(8)) }
         fun toggle(label: String, key: String) {
             box.addView(Switch(this).apply {
-                text = t(label); setTextColor(INK); isChecked = prefs.getBoolean(key, key != "interface_sound")
+                text = t(label); contentDescription = t(label); setTextColor(INK); isChecked = prefs.getBoolean(key, key != "interface_sound")
                 minimumHeight = dp(56); isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true)
                 setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(key, checked).apply() }
             })

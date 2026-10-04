@@ -92,6 +92,14 @@ Only the addressed recipient can acknowledge a pending envelope. The server atom
 
 When FCM is configured and the recipient is offline, the server sends only generic data `{ "kind": "message", "id": "550e8400-e29b-41d4-a716-446655440000" }`; no sender number or ciphertext is included. Push is a wake-up hint, not message storage: clients must reconnect and fetch the queued envelope. See [`../docs/PUSH-SETUP.md`](../docs/PUSH-SETUP.md).
 
+Protocol-7 clients can request another authenticated inbox pass after verifying a peer:
+
+```json
+{ "type": "inbox_sync" }
+```
+
+The server re-announces any pending incoming call first, then sends unexpired delivery receipts and queued ciphertext, and finally `{ "type": "inbox_complete" }`. The same completion event follows the initial `registered` response after the server queues those pending events. WebSocket ordering lets the client process queued ciphertext serially before treating the sync as complete. Sync requests are limited to 10 per account per minute; older protocol versions cannot request a sync. Sync does not modify the account's FCM token. Receipts expire after seven days and are capped at 5,000 records, so a later sync may replay a still-retained receipt but cannot reset its retention window.
+
 ### Fixed-roster group audio calls
 
 ```json

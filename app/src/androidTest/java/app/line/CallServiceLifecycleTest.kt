@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.view.View
+import android.view.ViewGroup
 import android.util.Base64
 import androidx.test.platform.app.InstrumentationRegistry
 import app.line.crypto.SecureStore
@@ -52,6 +54,37 @@ import java.util.concurrent.atomic.AtomicReference
 class CallServiceLifecycleTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
+
+    @Test fun conversationCallButtonReachesCallSetupAndConnectedState() {
+        resetDevice()
+        context.getSharedPreferences("line-ui", 0).edit().putString("language", "ru").commit()
+        val peer = TestPeer()
+        seedPeer(peer, establishSession = true)
+        val signaling = TestSignaling(LOCAL_NUMBER, peer.bundle).also { it.start() }
+        val running = bindService()
+        val media = AtomicReference<WaitingMediaEngine?>()
+        try {
+            configure(running, signaling)
+            running.service.mediaEngineFactory = { _, _, event -> WaitingMediaEngine(event).also(media::set) }
+            grantMicrophone()
+            instrumentation.runOnMainSync {
+                context.startActivity(Intent(context, MainActivity::class.java).putExtra("peer", PEER_NUMBER)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            }
+            instrumentation.waitForIdleSync()
+            Thread.sleep(300)
+            instrumentation.runOnMainSync {
+                fun nodes(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { nodes(view.getChildAt(it)) } else emptyList()
+                nodes(running.activity.window.decorView).first { it.contentDescription?.toString() == "Позвонить контакту" }.performClick()
+            }
+            await { signaling.createCallCount.get() == 1 && media.get()?.connecting?.count == 0L }
+            assertEquals(1, signaling.joinCount.get())
+            media.get()!!.succeed()
+            await { running.service.state.phase == Phase.CONNECTED }
+            instrumentation.runOnMainSync { running.service.hangup() }
+            await { running.service.state.phase == Phase.IDLE }
+        } finally { running.close(); signaling.close() }
+    }
 
     @Test fun staleConnectCannotReplaceCurrentClientAndReconfigureFailsPendingLookups() {
         resetDevice()
@@ -250,7 +283,9 @@ class CallServiceLifecycleTest {
     }
 
     private fun grantMicrophone() {
-        instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.RECORD_AUDIO)
+        instrumentation.uiAutomation.executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").use { descriptor ->
+            java.io.FileInputStream(descriptor.fileDescriptor).use { it.readBytes() }
+        }
     }
 
     private fun startCall(action: String, peer: String? = null) {

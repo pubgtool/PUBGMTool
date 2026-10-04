@@ -29,8 +29,7 @@ class PushInboxWorker(context: Context, params: WorkerParameters) : CoroutineWor
     override suspend fun doWork(): Result {
         if (runAttemptCount >= MAX_ATTEMPTS) return Result.failure()
         return try {
-            if (!bindUntilOnline()) return retryOrFail()
-            delay(ONLINE_DRAIN_MILLIS)
+            if (!bindUntilInboxSynchronized()) return retryOrFail()
             Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -39,7 +38,7 @@ class PushInboxWorker(context: Context, params: WorkerParameters) : CoroutineWor
         }
     }
 
-    private suspend fun bindUntilOnline(): Boolean {
+    private suspend fun bindUntilInboxSynchronized(): Boolean {
         val context = applicationContext
         val serviceRef = AtomicReference<CallService?>()
         val observerRef = AtomicReference<((CallState) -> Unit)?>(null)
@@ -86,8 +85,18 @@ class PushInboxWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 }
             } ?: false
             if (!connected) return false
-            delay(ONLINE_DRAIN_MILLIS)
-            return true
+            var inboxSynced = false
+            withTimeoutOrNull(INBOX_SYNC_TIMEOUT_MILLIS) {
+                while (!inboxSynced) {
+                    inboxSynced = withContext(Dispatchers.Main.immediate) {
+                        serviceRef.get()?.inboxSynchronized() == true
+                    }
+                    if (!inboxSynced) {
+                        delay(INBOX_SYNC_POLL_MILLIS)
+                    }
+                }
+            }
+            return inboxSynced
         } finally {
             withContext(Dispatchers.Main.immediate) {
                 serviceRef.get()?.let { service -> observerRef.get()?.let(service::removeObserver) }
@@ -102,7 +111,8 @@ class PushInboxWorker(context: Context, params: WorkerParameters) : CoroutineWor
         private const val UNIQUE_WORK = "line-push-inbox-sync"
         private const val MAX_ATTEMPTS = 3
         private const val SERVICE_CONNECT_TIMEOUT_MILLIS = 20_000L
-        private const val ONLINE_DRAIN_MILLIS = 3_000L
+        private const val INBOX_SYNC_TIMEOUT_MILLIS = 10_000L
+        private const val INBOX_SYNC_POLL_MILLIS = 200L
 
         fun enqueue(context: Context) {
             val request = OneTimeWorkRequestBuilder<PushInboxWorker>()
